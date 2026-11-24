@@ -75,12 +75,21 @@ For three fully connected PCs this design needs three pairwise sessions, up to n
 
 Building requires the .NET 8 SDK, CMake, Visual Studio 2022 with the Desktop development with C++ workload, and a Windows 10 or 11 SDK with C++/WinRT. Run from the project directory on Windows x64.
 
+Open [DeskPortal.sln](DeskPortal.sln) in Visual Studio or run `dotnet build` from the repository root.
+
+| Directory | Contents |
+| --- | --- |
+| [src/DeskPortal](src/DeskPortal) | Windows desktop app, organized by feature |
+| [src/DeskCapture](src/DeskCapture) | Native C++ capture and video codec library, built by the app project |
+| [tests/DeskPortal.Checks](tests/DeskPortal.Checks) | Checks compiled into DeskPortal so the installed app can run them on either PC |
+| [installer](installer) and [scripts](scripts) | Windows installer definition and release build script |
+
 CMake verifies the SHA-256 of the pinned FFmpeg 8.1 x64 LGPL SDK in `vendor/` on first extraction. Keep that exact archive in the repository so clean builds continue to work after upstream rotates its daily downloads. To use a compatible SDK you already have, set the CMake cache variable `FFMPEG_ROOT`. The app ships the shared codec DLLs and their license. [Matching FFmpeg sources](https://github.com/FFmpeg/FFmpeg/tree/660b5aa7db) · [Windows build recipes](https://github.com/FFmpeg-Builds/FFmpeg-Builds)
 
 For a framework-dependent developer build, use a machine with the x64 .NET 8 Desktop Runtime and publish to a separate directory.
 
 ```powershell
-dotnet publish DeskPortal.csproj -c Release -o obj/dev-publish
+dotnet publish src/DeskPortal/DeskPortal.csproj -c Release -o obj/dev-publish
 dotnet obj/dev-publish/DeskPortal.dll --self-test
 dotnet obj/dev-publish/DeskPortal.dll --pointer-check
 dotnet obj/dev-publish/DeskPortal.dll --caption-input-check

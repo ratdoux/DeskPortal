@@ -15,7 +15,7 @@ $name = "DeskPortal-$Version-win-x64"
 
 Push-Location $root
 try {
-    & dotnet publish DeskPortal.csproj -c Release -r win-x64 --self-contained true -o $publish `
+    & dotnet publish src/DeskPortal/DeskPortal.csproj -c Release -r win-x64 --self-contained true -o $publish `
         "-p:Version=$Version" "-p:OutputPath=$scratch/build/" -p:DebugSymbols=false -p:DebugType=None
     if ($LASTEXITCODE) { throw "dotnet publish failed ($LASTEXITCODE)." }
 

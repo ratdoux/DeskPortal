@@ -13,7 +13,7 @@
     <AssemblyTitle>DeskPortal</AssemblyTitle>
   </PropertyGroup>
   <Target Name="BuildCapture" BeforeTargets="PrepareForBuild" Condition="'$(DesignTimeBuild)' != 'true'">
-    <Exec Command="cmake -S Native -B obj/native -G &quot;Visual Studio 17 2022&quot; -A x64" />
+    <Exec Command="cmake -S ../DeskCapture -B obj/native -G &quot;Visual Studio 17 2022&quot; -A x64" />
     <Exec Command="cmake --build obj/native --config $(Configuration)" />
   </Target>
   <Target Name="PublishRuntimeNotices" AfterTargets="Publish" Condition="'$(SelfContained)' == 'true'">
@@ -24,9 +24,10 @@
     <Copy SourceFiles="@(_RuntimeNotice)" DestinationFiles="@(_RuntimeNotice->'$(PublishDir)/licenses/%(PackName)/%(Filename)%(Extension)')" />
   </Target>
   <ItemGroup>
-    <EmbeddedResource Include="PeerFirewall.ps1" LogicalName="DeskPortal.PeerFirewall.ps1" />
+    <Compile Include="../../tests/DeskPortal.Checks/*.cs" Link="Checks/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Networking/PeerFirewall.ps1" LogicalName="DeskPortal.PeerFirewall.ps1" />
     <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
-    <None Update="README.md;INSTALL.md" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="../../README.md;../../INSTALL.md" Link="%(Filename)%(Extension)" CopyToPublishDirectory="PreserveNewest" />
     <None Include="obj/native/$(Configuration)/DeskCapture.dll" Link="DeskCapture.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="obj/native/codec-runtime/avcodec-62.dll;obj/native/codec-runtime/avutil-60.dll;obj/native/codec-runtime/swscale-9.dll;obj/native/codec-runtime/swresample-6.dll;obj/native/codec-runtime/FFmpeg-LICENSE.txt" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
