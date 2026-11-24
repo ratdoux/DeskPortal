@@ -1,0 +1,93 @@
+name: Windows build and release
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build, test and package Windows x64
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            if (!$env:GITHUB_REF_NAME.StartsWith('v')) { throw 'Expected a v-prefixed release tag.' }
+            $env:GITHUB_REF_NAME.Substring(1)
+          } else { '0.0.0-dev' }
+          ./scripts/Build-Release.ps1 -Version $version
+
+      - name: Smoke-test the installer on the runner
+        shell: pwsh
+        run: |
+          $installer = Get-Item 'artifacts/releases/*/*-Setup.exe'
+          $app = Join-Path $env:RUNNER_TEMP 'DeskPortal install check'
+          $setup = Start-Process $installer.FullName -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOICONS /DIR=`"$app`"" -Wait -PassThru
+          if ($setup.ExitCode) { throw "Installation failed ($($setup.ExitCode))." }
+          $test = Start-Process (Join-Path $app 'DeskPortal.exe') -ArgumentList '--self-test' -NoNewWindow -Wait -PassThru
+          if ($test.ExitCode) { throw "Installed app failed ($($test.ExitCode))." }
+          $remove = Start-Process (Join-Path $app 'unins000.exe') -ArgumentList '/VERYSILENT /NORESTART' -Wait -PassThru
+          if ($remove.ExitCode -or (Test-Path (Join-Path $app 'DeskPortal.exe'))) { throw 'Uninstall failed.' }
+
+      - name: Save the release files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: DeskPortal-win-x64
+          path: artifacts/releases/
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: DeskPortal-win-x64
+          path: release-files
+
+      - name: Publish the installer, portable ZIP and checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          cd "release-files/$version"
+          sha256sum --check SHA256SUMS.txt
+          assets=("DeskPortal-$version-win-x64-Setup.exe" "DeskPortal-$version-win-x64.zip" SHA256SUMS.txt)
+          prerelease=false
+          if [[ "$version" == *-* ]]; then prerelease=true; fi
+          if draft=$(gh release view "$TAG" --json isDraft --jq '.isDraft'); then
+            if [[ "$draft" == false ]]; then
+              echo "Release $TAG is already published."
+              exit 0
+            fi
+            gh release upload "$TAG" "${assets[@]}" --clobber
+            gh release edit "$TAG" --draft=false --prerelease="$prerelease"
+          else
+            gh release create "$TAG" "${assets[@]}" --verify-tag --title "DeskPortal $version" --generate-notes --prerelease="$prerelease"
+          fi
