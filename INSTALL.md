@@ -14,11 +14,13 @@ To verify a download, run `Get-FileHash -Algorithm SHA256 .\<downloaded-file>` i
 
 ## Pair the two PCs
 
-1. Open DeskPortal on both PCs. **Network access** shows the local IPv4 address. On each PC, enter the address shown on the other one.
+1. Open DeskPortal on both PCs. Each dashboard shows its own IPv4 address beside **This PC**. In **Network access** on each PC, enter the address from the other PC’s dashboard. If you have several network adapters, the setup dialog lists their available IPv4 addresses.
 2. Approve the Windows administrator prompt for the firewall rules. They allow the selected peer to reach this copy of DeskPortal on UDP 47832 for discovery and TCP 47831 for pairing and sharing.
 3. On either PC, select the other machine under **Nearby computers**. Check the six digits on both screens. If they match, click **Codes match** on each PC.
 4. Open **Edit screen layout**. Place each monitor where it sits on your desk, with an edge touching its neighbor. Click **Apply layout** to synchronize the arrangement.
 5. Move your mouse through a shared edge. Try dragging a window across by its title bar, then click or type in it on the other PC. **Ctrl+Alt+Home** brings the windows and input home.
+
+Open **Quick start** on the dashboard or in the network setup dialog for a short walkthrough of pairing, arranging monitors, sharing and returning control.
 
 ## If the other PC does not appear
 

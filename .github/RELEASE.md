@@ -13,7 +13,7 @@ Both packages include the .NET desktop runtime and FFmpeg. To check a download, 
 
 ## Pair your PCs
 
-1. In **Network access** on each PC, enter the IPv4 address displayed by the other PC. Approve the Windows prompt for the peer-specific firewall rules.
+1. Find **This PC** on each dashboard. In **Network access**, enter the IPv4 shown on the other PC’s dashboard. Approve the Windows prompt for the peer-specific firewall rules. Open **Quick start** for an in-app walkthrough.
 2. Pick the other PC under **Nearby computers**. If the six digits match, select **Codes match** on both screens.
 3. Open **Edit screen layout**, arrange the monitors as they sit on your desk, and apply the layout. Drag a window by its title bar across a shared edge. **Ctrl+Alt+Home** brings your windows and input home.
 

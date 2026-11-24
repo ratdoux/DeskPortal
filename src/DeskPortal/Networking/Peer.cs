@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Text.Json;
@@ -133,8 +134,10 @@ sealed class Peer : IDisposable
         }
     }
     public CancellationToken Token => stop.Token;
+    public IPAddress? RemoteAddress { get; }
     public Peer(TcpClient client, SslStream stream, SessionLink? video = null, SessionLink? transfer = null)
     {
+        RemoteAddress = (client.Client.RemoteEndPoint as IPEndPoint)?.Address;
         primary = new(client, stream);
         this.video = video;
         this.transfer = transfer;

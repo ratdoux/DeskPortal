@@ -1,6 +1,4 @@
 using System.Net;
-using System.Net.NetworkInformation;
-using System.Net.Sockets;
 
 namespace DeskLink;
 
@@ -8,7 +6,7 @@ sealed class PeerAddressDialog : Form
 {
     public IPAddress? SelectedPeer { get; private set; }
 
-    public PeerAddressDialog(IPAddress? current)
+    public PeerAddressDialog(IPAddress? current, IPAddress[] localAddresses, DeskSettings settings)
     {
         Text = "Network access";
         FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -24,12 +22,8 @@ sealed class PeerAddressDialog : Form
         var input = new TextBox { AccessibleName = "Other computer’s IPv4 address", Width = 260,
             PlaceholderText = "e.g. 192.168.1.42", Text = current?.ToString() ?? "" };
         panel.Controls.Add(input);
-        var localAddresses = NetworkInterface.GetAllNetworkInterfaces()
-            .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
-            .SelectMany(n => n.GetIPProperties().UnicastAddresses).Select(a => a.Address)
-            .Where(a => a.AddressFamily == AddressFamily.InterNetwork).Distinct().ToArray();
         if (localAddresses.Length > 0)
-            panel.Controls.Add(new Label { Text = $"{Environment.MachineName} · {string.Join(", ", localAddresses.Select(a => a.ToString()))}",
+            panel.Controls.Add(new Label { Text = $"This PC ({Environment.MachineName}) · IPv4 {string.Join(", ", localAddresses.Select(a => a.ToString()))}",
                 AutoSize = true, MaximumSize = new Size(400, 0), Tag = Tone.Quiet });
         var save = new BlockButton { Text = "Allow peer" };
         var cancel = new BlockButton { Text = "Cancel", DialogResult = DialogResult.Cancel };
@@ -41,7 +35,10 @@ sealed class PeerAddressDialog : Form
         }
         input.TextChanged += (_, _) => ValidatePeer(); ValidatePeer();
         save.Click += (_, _) => DialogResult = DialogResult.OK;
-        panel.Controls.Add(DeskStyle.LineOf(save, cancel));
+        var help = new BlockButton { Text = "Quick start" };
+        DeskStyle.Button(help);
+        help.Click += (_, _) => { using var guide = new QuickStartForm(settings); guide.ShowDialog(this); };
+        panel.Controls.Add(DeskStyle.LineOf(save, cancel, help));
         AcceptButton = save; CancelButton = cancel;
         Controls.Add(panel); ActiveControl = input;
     }

@@ -71,6 +71,7 @@ static class Checks
             TestStalledWheel().GetAwaiter().GetResult();
             TestInputPriority();
             TestSettings();
+            TestDashboardLayout();
             TestFiles();
             Task.Run(TestConfirmedPairing).GetAwaiter().GetResult();
             Task.Run(TestPair).GetAwaiter().GetResult();
@@ -79,6 +80,34 @@ static class Checks
             return 0;
         }
         catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
+    }
+    static void TestDashboardLayout()
+    {
+        using var form = new DeskForm(false) { Opacity = 0, ShowInTaskbar = false };
+        form.Show();
+        IEnumerable<Control> Children(Control parent) =>
+            parent.Controls.Cast<Control>().SelectMany(c => Children(c).Prepend(c));
+        var controls = Children(form).ToArray();
+        var history = controls.Single(c => c.AccessibleName == "Shared clipboard history");
+        var area = history.Parent!;
+        var help = controls.OfType<Button>().Single(b => b.Text == "Quick start");
+        foreach (var size in new[] { form.Size, form.MinimumSize })
+        {
+            form.Size = size;
+            foreach (var item in new[] { area, help, controls.Single(c => c.Text == "Use selected item") })
+            {
+                var bounds = item.RectangleToScreen(item.ClientRectangle);
+                Require(!bounds.IsEmpty && item.Visible, "Missing dashboard control");
+                for (Control? ancestor = item.Parent; ancestor != null; ancestor = ancestor.Parent)
+                {
+                    // On a smaller work area the scrollable dashboard may extend past its viewport.
+                    if (ancestor is Panel { AutoScroll: true } viewport && (viewport.HorizontalScroll.Visible || viewport.VerticalScroll.Visible)) break;
+                    Require(ancestor.RectangleToScreen(ancestor.ClientRectangle).Contains(bounds), $"Clipped dashboard control at {form.DeviceDpi} DPI: {item.Text}");
+                }
+            }
+        }
+        form.Close();
+        Console.WriteLine("PASS  Clipboard history and dashboard actions fit at the opening and minimum sizes.");
     }
     static void TestNestedDragDispatch()
     {

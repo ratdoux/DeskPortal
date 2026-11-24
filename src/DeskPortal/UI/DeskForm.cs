@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
@@ -11,6 +12,11 @@ sealed class DeskForm : Form
     readonly Guid deviceId = Guid.NewGuid();
     readonly CancellationTokenSource formLifetime = new();
     readonly BlockButton networkAccess = new() { Text = "Network access" };
+    readonly Label machine = DeskStyle.Caption($"This PC  ·  {Environment.MachineName}\nIPv4  ·  Checking…");
+    readonly Panel dashboard = new() { Dock = DockStyle.Fill, AutoScroll = true };
+    IPAddress? networkPeer;
+    int addressRevision;
+    QuickStartForm? guide;
     CancellationTokenSource? discoveryLifetime;
     Task discoveryTask = Task.CompletedTask;
     bool configuringNetwork;
@@ -77,7 +83,7 @@ sealed class DeskForm : Form
         Text = "DeskPortal";
         Font = new Font("Segoe UI", 10);
         AutoScaleDimensions = new SizeF(96, 96); AutoScaleMode = AutoScaleMode.Dpi;
-        MinimumSize = new Size(675, 545); ClientSize = new Size(822, 540);
+        ClientSize = new Size(822, 540);
         StartPosition = FormStartPosition.CenterScreen;
         side.Items.AddRange(["On the right", "On the left"]); side.SelectedIndex = 0;
         BuildDashboard();
@@ -124,7 +130,11 @@ sealed class DeskForm : Form
         };
         computers.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left && computers.IndexFromPoint(e.Location) >= 0) ChooseComputer(); };
         computers.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; ChooseComputer(); } };
-        if (listenToDesktop) Shown += async (_, _) => await ConfigureNetwork(false);
+        Shown += async (_, _) =>
+        {
+            await RefreshLocalAddress();
+            if (listenToDesktop && !closing) await ConfigureNetwork(false);
+        };
         networkAccess.Click += async (_, _) => await ConfigureNetwork(true);
         disconnect.Click += (_, _) => Detach("Disconnected");
         restore.Click += (_, _) => pointer?.Recover();
@@ -156,6 +166,7 @@ sealed class DeskForm : Form
     void BuildDashboard()
     {
         var root = DeskStyle.Column(Tone.Canvas);
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         var banner = new DeskBanner { AutoSize = true, Dock = DockStyle.Fill, Tag = Tone.Primary,
             ColumnCount = 3, Margin = Padding.Empty, Padding = new Padding(20, 12, 17, 12) };
         banner.ColumnStyles.Add(new(SizeType.AutoSize)); banner.ColumnStyles.Add(new(SizeType.Percent, 100));
@@ -164,12 +175,12 @@ sealed class DeskForm : Form
         banner.Controls.Add(mark, 0, 0);
         var brand = DeskStyle.Heading("DeskPortal", 34); brand.Margin = Padding.Empty;
         banner.Controls.Add(brand, 1, 0);
-        var machine = DeskStyle.Caption($"This PC  ·  {Environment.MachineName}");
         machine.Tag = Tone.Inverse; machine.Padding = new Padding(8, 5, 8, 5); machine.Anchor = AnchorStyles.Right;
         machine.Font = new Font("Consolas", 10, FontStyle.Bold);
         banner.Controls.Add(machine, 2, 0); DeskStyle.Row(root, banner);
 
         var body = DeskStyle.Column(Tone.Canvas, 16); DeskStyle.Row(root, body, true);
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         var session = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, Dock = DockStyle.Fill, Margin = Padding.Empty };
         session.ColumnStyles.Add(new(SizeType.Percent, 100)); session.ColumnStyles.Add(new(SizeType.AutoSize));
         state.Font = new Font("Segoe UI", 14, FontStyle.Bold);
@@ -177,7 +188,15 @@ sealed class DeskForm : Form
         session.Controls.Add(state, 0, 0);
         foreach (var b in new[] { preferences, stats, disconnect, files, restore, use, connect, editLayout, networkAccess }) DeskStyle.Button(b, b == connect);
         disconnect.Visible = false;
-        var tools = DeskStyle.LineOf(stats, preferences); tools.WrapContents = false;
+        var help = new BlockButton { Text = "Quick start" }; DeskStyle.Button(help);
+        help.Click += (_, _) =>
+        {
+            if (guide != null) { guide.Activate(); return; }
+            guide = new QuickStartForm(settings);
+            guide.FormClosed += (_, _) => guide = null;
+            guide.Show(this);
+        };
+        var tools = DeskStyle.LineOf(help, stats, preferences); tools.WrapContents = false;
         session.Controls.Add(tools, 1, 0);
         DeskStyle.Row(body, session);
         detail.Tag = Tone.Quiet; detail.Dock = DockStyle.Top; detail.MaximumSize = Size.Empty;
@@ -188,6 +207,8 @@ sealed class DeskForm : Form
         cards.RowStyles.Add(new(SizeType.Percent, 100)); DeskStyle.Row(body, cards, true);
         var devices = DeskStyle.Column(Tone.Frame, 14); devices.Margin = new Padding(0, 0, 6, 0);
         var clips = DeskStyle.Column(Tone.Frame, 14); clips.Margin = new Padding(6, 0, 0, 0);
+        devices.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        clips.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         cards.Controls.Add(devices, 0, 0); cards.Controls.Add(clips, 1, 0);
         DeskStyle.Row(devices, DeskStyle.Heading("Nearby computers")); DeskStyle.Row(devices, ListArea(computers, noComputers), true);
         DeskStyle.Row(devices, DeskStyle.Caption("Screen layout"));
@@ -203,7 +224,52 @@ sealed class DeskForm : Form
         sharingState.Tag = streamState.Tag = Tone.Quiet;
         DeskStyle.Row(body, sharingState); DeskStyle.Row(body, streamState);
         shortcutWarning.Visible = false; shortcutWarning.MaximumSize = new Size(600, 0); DeskStyle.Row(body, shortcutWarning);
-        Controls.Add(root);
+        dashboard.Controls.Add(root); Controls.Add(dashboard);
+    }
+    protected override void OnLoad(EventArgs e)
+    {
+        FitDashboard(); base.OnLoad(e);
+    }
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        if (IsHandleCreated && !closing) BeginInvoke(FitDashboard);
+    }
+    void FitDashboard()
+    {
+        if (closing || WindowState != FormWindowState.Normal) return;
+        var work = Screen.FromControl(this).WorkingArea;
+        var canvas = LogicalToDeviceUnits(new Size(650, 475));
+        dashboard.AutoScrollMinSize = canvas;
+        var minimum = SizeFromClientSize(canvas);
+        MinimumSize = new Size(Math.Min(minimum.Width, work.Width), Math.Min(minimum.Height, work.Height));
+        var size = new Size(Math.Min(Width, work.Width), Math.Min(Height, work.Height));
+        Bounds = new Rectangle(Math.Clamp(Left, work.Left, work.Right - size.Width),
+            Math.Clamp(Top, work.Top, work.Bottom - size.Height), size.Width, size.Height);
+    }
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        NetworkChange.NetworkAddressChanged += NetworkChanged;
+    }
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        NetworkChange.NetworkAddressChanged -= NetworkChanged;
+        base.OnHandleDestroyed(e);
+    }
+    void NetworkChanged(object? sender, EventArgs args)
+    {
+        if (closing || !IsHandleCreated) return;
+        try { BeginInvoke(() => _ = RefreshLocalAddress()); } catch (InvalidOperationException) { }
+    }
+    async Task<IPAddress[]> RefreshLocalAddress()
+    {
+        int revision = ++addressRevision;
+        var target = networkPeer;
+        var addresses = await Task.Run(() => LocalIPv4.Read(target));
+        if (!closing && !IsDisposed && revision == addressRevision)
+            machine.Text = $"This PC  ·  {Environment.MachineName}\nIPv4  ·  {addresses.FirstOrDefault()?.ToString() ?? "Unavailable"}";
+        return addresses;
     }
     static Panel ListArea(DeskList list, Label empty)
     {
@@ -264,7 +330,7 @@ sealed class DeskForm : Form
         restore.Enabled = ActionEnabled(DeskAction.Recover);
         history.Enabled = active.HasFlag(Sharing.Clipboard);
         use.Enabled = history.Enabled && history.SelectedItem != null;
-        noComputers.Text = layout == null ? "No computers found yet." : "No other computers available.";
+        noComputers.Text = layout == null ? "No computers found yet." : $"{pairedName}\n{peer?.RemoteAddress}";
         noHistory.Visible = history.Items.Count == 0;
         history.Visible = history.Items.Count > 0;
         noHistory.Text = peer == null ? "Clipboard history appears after pairing." :
@@ -278,6 +344,7 @@ sealed class DeskForm : Form
         if (themeChanged)
         {
             DeskStyle.Apply(this, settings.Appearance);
+            if (guide != null) DeskStyle.Apply(guide, settings.Appearance);
             if (performanceForm != null) DeskStyle.Apply(performanceForm, settings.Appearance);
         }
         UpdateShortcutHint();
@@ -359,7 +426,10 @@ sealed class DeskForm : Form
             if (closing) return;
             if (edit || address == null)
             {
-                using var prompt = new PeerAddressDialog(address);
+                networkPeer = address;
+                var local = await RefreshLocalAddress();
+                if (closing) return;
+                using var prompt = new PeerAddressDialog(address, local, settings);
                 DeskStyle.Apply(prompt, settings.Appearance);
                 if (prompt.ShowDialog(this) != DialogResult.OK)
                 {
@@ -376,6 +446,8 @@ sealed class DeskForm : Form
                 discoveryLifetime = null;
             }
             if (closing) return;
+            networkPeer = address;
+            _ = RefreshLocalAddress();
             if (!address.Equals(saved)) PeerFirewall.SavePeer(address);
             Status("Checking Windows Firewall access for " + address + "…");
             await PeerFirewall.EnsureAsync(program, address, rules);

@@ -7,7 +7,7 @@ Both computers can share windows at once. One mouse and keyboard can move across
 ## Installation
 
 1. On **both Windows x64 PCs**, run the release asset ending in `-win-x64-Setup.exe`, or extract the portable `-win-x64.zip` and start `DeskPortal.exe`. Both packages include the .NET desktop runtime. [Download the latest release](https://github.com/ratdoux/DeskPortal/releases/latest) · [Installation and updates](INSTALL.md)
-2. Enter the other PC’s IPv4 address on each machine. Approve the firewall prompt, select the peer under **Nearby computers**, and confirm the matching six-digit code on both PCs.
+2. Each dashboard shows its own IPv4 address beside **This PC**. Enter the other PC’s address in **Network access** on each machine. Approve the firewall prompt, select the peer under **Nearby computers**, and confirm the matching six-digit code on both PCs. **Quick start** walks you through these steps inside the app.
 3. Open **Edit screen layout**, arrange the displays, then drag a window’s title bar across a shared edge. **Ctrl+Alt+Home** returns shared windows and reclaims input.
 
 [Using the shared desk](#use-the-shared-desk) · [Streaming settings](#settings) · [Performance](#performance) · [Building from source](#build-and-verify) · [Publishing a release](#publishing-a-release)
