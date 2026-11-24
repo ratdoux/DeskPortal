@@ -10,14 +10,49 @@ on:
 permissions:
   contents: read
 
+# A main build chooses its patch version after the preceding main publication finishes.
+concurrency:
+  group: windows-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'publish-main' || github.run_id }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: windows-2022
     timeout-minutes: 35
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Select the package version
+        id: version
+        shell: pwsh
+        run: |
+          $tag = ''
+          if ($env:GITHUB_EVENT_NAME -eq 'push' -and $env:GITHUB_REF_TYPE -eq 'tag') {
+            $tag = $env:GITHUB_REF_NAME
+          } elseif ($env:GITHUB_EVENT_NAME -eq 'push' -and $env:GITHUB_REF -eq 'refs/heads/main') {
+            $tags = @(git tag --list --sort=-version:refname)
+            if ($LASTEXITCODE) { throw 'Cannot read repository tags.' }
+            $here = @(git tag --points-at HEAD)
+            if ($LASTEXITCODE) { throw 'Cannot read tags for this commit.' }
+            $stable = @($tags -cmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')
+            $tag = $stable | Where-Object { $_ -cin $here } | Select-Object -First 1
+            if (!$tag -and $stable.Count) {
+              $last = [version]$stable[0].Substring(1)
+              $tag = "v$($last.Major).$($last.Minor).$($last.Build + 1)"
+            }
+            if (!$tag) { $tag = 'v0.1.0' }
+          }
+          $version = if ($tag) { $tag.Substring(1) } elseif ($env:GITHUB_REF_TYPE -eq 'tag') {
+            if (!$env:GITHUB_REF_NAME.StartsWith('v')) { throw 'Expected a v-prefixed version tag.' }
+            $env:GITHUB_REF_NAME.Substring(1)
+          } else { '0.0.0-dev' }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
 
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
@@ -25,12 +60,10 @@ jobs:
 
       - name: Build, test and package Windows x64
         shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') {
-            if (!$env:GITHUB_REF_NAME.StartsWith('v')) { throw 'Expected a v-prefixed release tag.' }
-            $env:GITHUB_REF_NAME.Substring(1)
-          } else { '0.0.0-dev' }
-          ./scripts/Build-Release.ps1 -Version $version
+          ./scripts/Build-Release.ps1 -Version $env:PACKAGE_VERSION
 
       - name: Smoke-test the installer on the runner
         shell: pwsh
@@ -54,40 +87,57 @@ jobs:
 
   release:
     needs: build
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: needs.build.outputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
     concurrency:
-      group: release-${{ github.ref }}
+      group: release-${{ needs.build.outputs.tag }}
       cancel-in-progress: false
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: DeskPortal-win-x64
           path: release-files
 
-      - name: Publish the installer, portable ZIP and checksums
+      - name: Publish the tested packages and release README
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.build.outputs.tag }}
         run: |
           set -euo pipefail
           version="${TAG#v}"
           cd "release-files/$version"
           sha256sum --check SHA256SUMS.txt
-          assets=("DeskPortal-$version-win-x64-Setup.exe" "DeskPortal-$version-win-x64.zip" SHA256SUMS.txt)
+          if git show-ref --verify --quiet "refs/tags/$TAG"; then
+            test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$(git rev-parse HEAD)" || {
+              echo "::error::Tag $TAG belongs to a different commit."
+              exit 1
+            }
+          else
+            git push origin "HEAD:refs/tags/$TAG"
+          fi
+
+          assets=("DeskPortal-$version-win-x64-Setup.exe" "DeskPortal-$version-win-x64.zip" SHA256SUMS.txt README.md)
           prerelease=false
           if [[ "$version" == *-* ]]; then prerelease=true; fi
+          sed -e "s|@REPOSITORY@|$GH_REPO|g" -e "s|@TAG@|$TAG|g" -e "s|@VERSION@|$version|g" \
+            "$GITHUB_WORKSPACE/.github/RELEASE.md" > README.md
           if draft=$(gh release view "$TAG" --json isDraft --jq '.isDraft'); then
             if [[ "$draft" == false ]]; then
               echo "Release $TAG is already published."
               exit 0
             fi
-            gh release upload "$TAG" "${assets[@]}" --clobber
-            gh release edit "$TAG" --draft=false --prerelease="$prerelease"
           else
-            gh release create "$TAG" "${assets[@]}" --verify-tag --title "DeskPortal $version" --generate-notes --prerelease="$prerelease"
+            gh release create "$TAG" --verify-tag --draft --title "DeskPortal $version" --notes-file README.md --prerelease="$prerelease"
           fi
+          gh release upload "$TAG" "${assets[@]}" --clobber
+          gh api "repos/$GH_REPO/releases/generate-notes" -f tag_name="$TAG" --jq '.body' > changes.md
+          { cat README.md; echo; cat changes.md; } > notes.md
+          gh release edit "$TAG" --notes-file notes.md --prerelease="$prerelease" --draft=false

@@ -6,7 +6,7 @@ Both computers can share windows at once. One mouse and keyboard can move across
 
 ## Installation
 
-1. On **both Windows x64 PCs**, run the release asset ending in `-win-x64-Setup.exe`, or extract the portable `-win-x64.zip` and start `DeskPortal.exe`. Both packages include the .NET desktop runtime. [Download a release](https://github.com/ratdoux/DeskPortal/releases) · [Installation and updates](INSTALL.md)
+1. On **both Windows x64 PCs**, run the release asset ending in `-win-x64-Setup.exe`, or extract the portable `-win-x64.zip` and start `DeskPortal.exe`. Both packages include the .NET desktop runtime. [Download the latest release](https://github.com/ratdoux/DeskPortal/releases/latest) · [Installation and updates](INSTALL.md)
 2. Enter the other PC’s IPv4 address on each machine. Approve the firewall prompt, select the peer under **Nearby computers**, and confirm the matching six-digit code on both PCs.
 3. Open **Edit screen layout**, arrange the displays, then drag a window’s title bar across a shared edge. **Ctrl+Alt+Home** returns shared windows and reclaims input.
 
@@ -113,14 +113,16 @@ For the 4K LAN check, start `--4k-listen <local-IPv4> <port>` on the receiver. P
 
 GitHub Actions builds and tests the x64 app on Windows Server 2022 for branch pushes, pull requests and manual runs. The workflow packages the same self-contained files into a per-user installer and a portable ZIP, tests a silent installation and uninstall, and uploads the packages with their SHA-256 checksums as a workflow artifact. [Release workflow](.github/workflows/release.yml)
 
-To publish, push a version tag on the commit you want to ship. For example, the following commands publish version 1.2.3 to the repository’s **Releases** page after the checks pass.
+Every successful push to `main` publishes the tested installer, portable ZIP, SHA-256 checksums and a quick-start README on [GitHub Releases](https://github.com/ratdoux/DeskPortal/releases). Automatic versions start at `v0.1.0` and increment the patch number from the highest stable version tag. Rerunning a published commit reuses its tag.
+
+To choose an explicit version, push a tag on the commit you want to ship. For example, these commands publish version 1.2.3 after the same checks pass.
 
 ```powershell
 git tag v1.2.3
 git push origin v1.2.3
 ```
 
-A tag such as `v1.2.3-beta.1` produces a GitHub prerelease. Branch builds and manual runs produce downloadable workflow artifacts only. The release job uses GitHub’s built-in token with write access to repository contents.
+A tag such as `v1.2.3-beta.1` produces a GitHub prerelease. Pull requests, pushes to other branches and manual runs produce workflow artifacts. The release job uses GitHub’s built-in token to tag the tested commit and publish the assets together.
 
 To build the same packages locally, run this from the repository root in PowerShell 7 on Windows x64. The script downloads a checksum-pinned portable Inno Setup compiler, or accepts an existing compiler via `-IsccPath`. Output goes to `artifacts/releases/<version>/`.
 
