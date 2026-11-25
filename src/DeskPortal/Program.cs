@@ -17,6 +17,8 @@ static class Program
         if (args.Length > 0 && args[0] is "--pointer-check" or "--pointer-listen" or "--pointer-join")
             return PointerProbe.Run(args).GetAwaiter().GetResult();
         ApplicationConfiguration.Initialize();
+        if (args is ["--projection-check"]) return ProjectionChecks.Run(capture: true);
+        if (args is ["--projection-loopback-check"]) return ProjectionChecks.Run(capture: true, recordInput: true);
         if (args is ["--caption-input-check"]) return WindowChecks.CheckCaptionInput();
         if (args is ["--wheel-input-check"]) return WindowChecks.CheckCaptionInput(wheel: true);
         if (args is [var drag, var host, var dragPort, ..] && drag is "--remote-drag-listen" or "--brave-drag-listen" or "--remote-drag-join" &&

@@ -50,6 +50,11 @@ sealed class StreamWindow : Form
         }
     }
     readonly VideoSurface surface = new();
+    readonly Panel tools = new() { BackColor = Color.FromArgb(23, 24, 28), TabStop = false };
+    readonly ToolTip tips = new();
+    public bool IsMonitor { get; }
+    public bool ToolbarAt(Point desktop) => tools.Bounds.Contains(PointToClient(desktop));
+    Kind InputKind => IsMonitor ? Kind.MonitorInput : Kind.WindowInput;
     readonly Peer peer;
     readonly Action<StreamWindow> returnHome;
     Bitmap? image;
@@ -78,10 +83,11 @@ sealed class StreamWindow : Form
     public Guid Id { get; }
     public Size SourceSize { get; set; }
     public int CaptionHeight => Math.Max(24, SystemInformation.CaptionHeight);
-    public StreamWindow(Peer peer, ViewInfo info, Action<StreamWindow> returnHome, Action<string> status)
+    public StreamWindow(Peer peer, ViewInfo info, Action<StreamWindow> returnHome, Action<string> status, bool monitor = false)
     {
         this.peer = peer; this.returnHome = returnHome; Id = info.Id; SourceSize = new(info.Width, info.Height);
         resizable = info.Resizable;
+        IsMonitor = monitor;
         resizeTimer.Tick += (_, _) => SendSize();
         SetCaption(info.Caption, info.ExactCaption);
         Text = info.Title;
@@ -91,6 +97,37 @@ sealed class StreamWindow : Form
         DoubleBuffered = true;
         BackColor = Color.FromArgb(34, 36, 41);
         Controls.Add(surface);
+        AddTool(monitor ? "Close projection" : "Send window back", "↩", () => returnHome(this));
+        AddTool("Tile on the left", "◧", () => Tile(TileMode.LeftHalf));
+        AddTool("Tile on the right", "◨", () => Tile(TileMode.RightHalf));
+        Controls.Add(tools);
+        tools.BringToFront();
+        LayoutTools();
+    }
+    void AddTool(string name, string glyph, Action action)
+    {
+        var button = new Button { AccessibleName = name, Text = glyph, FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI Symbol", 11), ForeColor = Color.White, BackColor = tools.BackColor,
+            TabStop = false, Margin = Padding.Empty, Padding = Padding.Empty };
+        button.FlatAppearance.BorderSize = 0;
+        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(65, 72, 88);
+        tips.SetToolTip(button, name);
+        button.Click += (_, _) => { ActiveControl = null; Focus(); action(); };
+        tools.Controls.Add(button);
+    }
+    void LayoutTools()
+    {
+        int width = LogicalToDeviceUnits(32), height = LogicalToDeviceUnits(26);
+        tools.SetBounds((ClientSize.Width - 3 * width) / 2, 0, 3 * width, height);
+        for (int i = 0; i < tools.Controls.Count; i++) tools.Controls[i].SetBounds(i * width, 0, width, height);
+    }
+    internal void Tile(TileMode mode)
+    {
+        var area = Screen.FromControl(this).WorkingArea;
+        if (WindowState != FormWindowState.Normal) WindowState = FormWindowState.Normal;
+        Bounds = DeskSettings.Place(mode, Bounds, area, reflow: AllowsZoom);
+        ReleaseDragPriority();
+        QueueSize();
     }
     protected override bool ShowWithoutActivation => true;
     public void SetCaption(CaptionRegion[]? regions, bool exact) { caption = regions; exactCaption = exact && regions != null; }
@@ -117,7 +154,7 @@ sealed class StreamWindow : Form
             if (incoming is { Presented: false }) Display(incoming);
             if (!visible) { outline?.Hide(); Hide(); }
             else if (hasPicture) ShowPicture();
-            else if (Owner == null)
+            else if (!IsMonitor && Owner == null)
             {
                 outline ??= new OpeningOutline();
                 outline.Bounds = bounds;
@@ -176,6 +213,7 @@ sealed class StreamWindow : Form
     {
         base.OnClientSizeChanged(e);
         QueueSize();
+        if (tools != null) LayoutTools();
         if (surface != null) SizeSurface();
     }
     void QueueSize()
@@ -192,7 +230,7 @@ sealed class StreamWindow : Form
         inFlight = lastRequest = ClientSize;
         peer.Send(Kind.ResizeWindow, new WindowSize(Id, inFlight.Width, inFlight.Height));
     }
-    bool NeedsSize => placed && resizable == true && !applyingBounds && !ending && WindowState != FormWindowState.Minimized &&
+    bool NeedsSize => !IsMonitor && placed && resizable == true && !applyingBounds && !ending && WindowState != FormWindowState.Minimized &&
         ClientSize.Width > 0 && ClientSize.Height > 0 && ClientSize != lastRequest;
     protected override void OnResizeEnd(EventArgs e) { base.OnResizeEnd(e); SendSize(); }
     public void AcceptSize(Size actual)
@@ -215,7 +253,8 @@ sealed class StreamWindow : Form
         }
         QueueSize();
     }
-    void SizeSurface() => surface.Size = nativePixels && !SourceSize.IsEmpty ? SourceSize : ClientSize;
+    Rectangle PictureArea => IsMonitor ? MonitorGeometry.Fit(ClientSize, SourceSize, tools.Height) : ClientRectangle;
+    void SizeSurface() => surface.Bounds = IsMonitor ? PictureArea : new Rectangle(Point.Empty, nativePixels && !SourceSize.IsEmpty ? SourceSize : ClientSize);
     bool displayUnavailable;
     public nint PreparePresentation(byte[] packet)
     {
@@ -235,7 +274,8 @@ sealed class StreamWindow : Form
         if (now == minimized) return;
         minimized = now;
         // A minimized projection needs no frames. The source resumes with its current picture.
-        if (peer.ViewVisibility && !ending) peer.Send(Kind.ViewVisibility, new ViewVisibility(Id, !now));
+        if ((IsMonitor || peer.ViewVisibility) && !ending)
+            peer.Send(IsMonitor ? Kind.MonitorVisibility : Kind.ViewVisibility, new ViewVisibility(Id, !now));
         if (!now) Uncovered?.Invoke(this);
     }
     public void Display(ReceivedVideo stream, bool offered = false)
@@ -266,11 +306,20 @@ sealed class StreamWindow : Form
         image = frame; hasPicture = true; ShowPicture(); Invalidate();
         MarkReady();
     }
-    void MarkReady() { if (!ready) { ready = true; peer.Send(Kind.WindowPlaced, Id); QueueSize(); } }
+    void MarkReady() { if (!ready) { ready = true; if (!IsMonitor) peer.Send(Kind.WindowPlaced, Id); QueueSize(); } }
     protected override void OnPaint(PaintEventArgs e)
     {
+        if (IsMonitor)
+        {
+            int margin = LogicalToDeviceUnits(8);
+            var title = new Rectangle(margin, 0, Math.Max(0, tools.Left - 2 * margin), tools.Height);
+            TextRenderer.DrawText(e.Graphics, Text, Font, title, Color.White,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
+            if (!hasPicture) TextRenderer.DrawText(e.Graphics, "Waiting for the first frame…", Font, PictureArea,
+                Color.White, TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter);
+        }
         if (image == null) return;
-        if (!nativePixels || scaleOpeningPicture) e.Graphics.DrawImage(image, ClientRectangle);
+        if (!nativePixels || scaleOpeningPicture) e.Graphics.DrawImage(image, PictureArea);
         else if (image.Size != SourceSize && image.Size == VideoCodec.EncodedSize(SourceSize))
             e.Graphics.DrawImage(image, new Rectangle(Point.Empty, SourceSize));
         else e.Graphics.DrawImageUnscaled(image, Point.Empty);
@@ -295,6 +344,7 @@ sealed class StreamWindow : Form
         {
             int packed = unchecked((int)m.LParam);
             var p = PointToClient(new Point((short)packed, (short)(packed >> 16)));
+            if (tools.Bounds.Contains(p)) { m.Result = 1; return; }
             if (placed && resizable == true && WindowState == FormWindowState.Normal && ClientRectangle.Contains(p))
             {
                 int grip = LogicalToDeviceUnits(6);
@@ -304,6 +354,7 @@ sealed class StreamWindow : Form
                 if (hit != 0) { m.Result = hit; return; }
             }
             // Leave source caption buttons clickable.
+            if (IsMonitor) { m.Result = p.Y < tools.Height ? 2 : 1; return; }
             var x = ScaleCoord(p.X, ClientSize.Width);
             var y = ScaleCoord(p.Y, ClientSize.Height);
             bool inCaption = caption == null ? p.Y >= 0 && y * (long)SourceSize.Height / 65535 < CaptionHeight :
@@ -317,20 +368,24 @@ sealed class StreamWindow : Form
             int packed = unchecked((int)m.LParam);
             var p = new Point((short)packed, (short)(packed >> 16));
             if (m.Msg is Win.Wheel or Win.HorizontalWheel) p = PointToClient(p);
-            if (m.Msg is Win.LeftDown or Win.RightDown or Win.MiddleDown or 0x203 or 0x206) { Activate(); Focus(); Capture = true; }
-            if (m.Msg is Win.LeftUp or Win.RightUp or Win.MiddleUp) Capture = false;
+            if (Win.GetMessageExtraInfo() == Win.ProjectionTag) { m.Result = 0; return; }
+            var picture = PictureArea;
+            if (IsMonitor && !Capture && !picture.Contains(p)) { m.Result = 0; return; }
+            if (m.Msg is Win.LeftDown or Win.RightDown or Win.MiddleDown or Win.XDown or 0x203 or 0x206) { Activate(); Focus(); Capture = true; }
+            if (m.Msg is Win.LeftUp or Win.RightUp or Win.MiddleUp or Win.XUp) Capture = false;
             long click = 0;
             if (m.Msg == Win.LeftUp && (peer.VideoDecoders & VideoCodec.ClickFeedback) != 0)
                 click = clickTime = System.Diagnostics.Stopwatch.GetTimestamp();
-            peer.Send(Kind.WindowInput, new WindowEvent(Id, m.Msg, ScaleCoord(p.X, Width), ScaleCoord(p.Y, Height),
+            peer.Send(InputKind, new WindowEvent(Id, m.Msg, ScaleCoord(p.X - picture.X, picture.Width), ScaleCoord(p.Y - picture.Y, picture.Height),
                 (short)((long)m.WParam >> 16), (int)((long)m.WParam & 0x7f), click));
             m.Result = 0; return;
         }
         if (m.Msg is 0x100 or 0x101 or 0x104 or 0x105)
         {
+            if (Win.GetMessageExtraInfo() == Win.ProjectionTag) { m.Result = 0; return; }
             int key = (int)m.WParam, bits = unchecked((int)m.LParam);
             if (m.Msg is 0x100 or 0x104) pressedKeys[key] = bits; else pressedKeys.Remove(key);
-            peer.Send(Kind.WindowInput, new WindowEvent(Id, m.Msg, 0, 0, key, bits));
+            peer.Send(InputKind, new WindowEvent(Id, m.Msg, 0, 0, key, bits));
             m.Result = 0; return;
         }
         base.WndProc(ref m);
@@ -338,8 +393,9 @@ sealed class StreamWindow : Form
     protected override void OnDeactivate(EventArgs e)
     {
         foreach (var (key, bits) in pressedKeys)
-            peer.Send(Kind.WindowInput, new WindowEvent(Id, 0x101, 0, 0, key, bits | unchecked((int)0xc0000000)));
+            peer.Send(InputKind, new WindowEvent(Id, 0x101, 0, 0, key, bits | unchecked((int)0xc0000000)));
         pressedKeys.Clear();
+        if (IsMonitor && !ending) peer.Send(Kind.MonitorRelease, Id);
         base.OnDeactivate(e);
     }
     static int ScaleCoord(int x, int size) => Math.Clamp((int)(65535L * x / Math.Max(1, size - 1)), 0, 65535);
@@ -351,7 +407,7 @@ sealed class StreamWindow : Form
     public void End() { ending = true; Close(); }
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { ending = true; resizeTimer.Dispose(); outline?.Dispose(); }
+        if (disposing) { ending = true; resizeTimer.Dispose(); tips.Dispose(); outline?.Dispose(); }
         base.Dispose(disposing);
     }
 }

@@ -1,6 +1,6 @@
 namespace DeskLink;
 
-enum DeskAction { History = 1, Recover, Files, Performance }
+enum DeskAction { History = 1, Recover, Files, Performance, Project }
 enum EdgeActivation { Automatic, HoldCtrl, HoldShift }
 
 sealed record ActionShortcuts
@@ -9,6 +9,7 @@ sealed record ActionShortcuts
     public Keys Recover { get; init; } = Keys.Control | Keys.Alt | Keys.Home;
     public Keys Files { get; init; }
     public Keys Performance { get; init; }
+    public Keys Project { get; init; } = Keys.Control | Keys.Alt | Keys.P;
 
     internal static readonly DeskAction[] Actions = Enum.GetValues<DeskAction>();
     internal static readonly Keys[] Modifiers = [Keys.Control | Keys.Alt, Keys.Control | Keys.Shift, Keys.Alt | Keys.Shift,
@@ -21,12 +22,13 @@ sealed record ActionShortcuts
     public Keys this[DeskAction action] => action switch
     {
         DeskAction.History => History, DeskAction.Recover => Recover, DeskAction.Files => Files,
-        DeskAction.Performance => Performance, _ => throw new ArgumentOutOfRangeException(nameof(action))
+        DeskAction.Performance => Performance, DeskAction.Project => Project, _ => throw new ArgumentOutOfRangeException(nameof(action))
     };
     public static string Name(DeskAction action) => action switch
     {
         DeskAction.History => "Open clipboard history", DeskAction.Recover => "Bring windows and input home",
-        DeskAction.Files => "Send files", DeskAction.Performance => "Open performance", _ => throw new ArgumentOutOfRangeException(nameof(action))
+        DeskAction.Files => "Send files", DeskAction.Performance => "Open performance", DeskAction.Project => "Project a screen",
+        _ => throw new ArgumentOutOfRangeException(nameof(action))
     };
     public static string Format(Keys chord)
     {

@@ -58,24 +58,29 @@ Each peer captures the original window through Windows Graphics Capture and a D3
 
 Once the receiver decodes a frame, the source keeps the original window on its display and makes it fully transparent. This leaves its desktop area available for other windows while capture continues. A temporary preview draws the visible portion during the drag. Native owned Win32 dialogs use their window-printing interface. The app installs no display driver.
 
-The prototype targets ordinary desktop apps at the same privilege level. Compatibility varies with custom title bars, popup menus, protected video, exclusive fullscreen rendering, raw input, and applications that manage their own transparency. File drops currently target Explorer and the desktop. The prototype streams window video only. Its practical latency and bandwidth depend on the window size and network.
+The prototype targets ordinary desktop apps at the same privilege level. Compatibility varies with custom title bars, popup menus, protected video, exclusive fullscreen rendering, raw input, and applications that manage their own transparency. File drops currently target Explorer and the desktop. Video latency and bandwidth depend on the captured dimensions, codec and network.
 
-## Adding a third computer
+## Project a monitor
 
-The current release allows and discovers one configured peer at a time. Multi-peer discovery would need an explicit list of allowed addresses and corresponding firewall rules. Each encrypted `Peer` has its own input, video and transfer connections. The single-session assumptions are in `DeskForm`, the global input hooks in `PointerBridge`, and the two groups of display tiles in `DeskLayout`.
+Press **Ctrl+Alt+P** with the pointer on the PC where you want to view the stream, or choose **Project screen** on its dashboard. A single available monitor opens immediately. With multiple monitors or paired computers, choose a computer and display in the centered picker. Change the shortcut in **Settings → Actions**.
 
-1. Introduce persistent device identities verified on first pairing and a collection of independently authenticated sessions. A single input coordinator should own the Windows hooks and track which device currently owns the pointer, keyboard and pressed buttons. On disconnect it should release those inputs and return control locally.
-2. Key each tile by device and display ID. Have one designated PC serialize and distribute layout revisions. Test a three-PC chain, simultaneous moves, monitor hot-plug and a peer leaving mid-drag before adding shared content.
-3. Keep window video and files on direct links between the source and destination. Moving a projected window on to a third PC requires an explicit destination, a verified direct session, a new stream from the original app, and acknowledgement before releasing the old view. File sends need an explicit destination as well.
-4. Give clipboard events an origin, unique ID and deduplication across sessions. Negotiate each feature per peer and keep performance counters and recovery scoped to that peer. Pairing with one computer should never grant automatic access to another.
+Click, scroll or type inside the projection to control the source computer. Enable window sharing on both PCs for video and mouse and keyboard sharing on both for control. A projected monitor keeps its resolution and aspect ratio as you resize the viewer. Windows shows its monitor capture indicator on the source. Choose **Stop projecting** there to end screen sharing.
 
-For three fully connected PCs this design needs three pairwise sessions, up to nine TLS connections across the desk. The first deliverable would be discovery, pairing and pointer routing across three devices. Clipboard, files and multi-hop window handoff can then be verified separately.
+The three buttons at the top center of a streamed window send it home or tile it on the left or right half of the viewing monitor’s work area. The return button on a whole-monitor projection closes that view.
+
+## Pair additional computers
+
+Open **Screen peers…** on both PCs and allow the other PC’s IPv4 address. Choose **Pair** on one PC and approve the matching six-digit code on both. Repeat for each direct connection you want. The screen-peer firewall rule allows only the listed IP addresses on TCP 47833.
+
+You can project monitors from several paired PCs at once. Each pair has its own encrypted connections and sharing permissions. The shared edge, individual window dragging, clipboard and file transfers use the main pair selected under **Nearby computers**. Choose **Disconnect** to end an additional pairing or **Forget** to remove its saved network access.
 
 ## Build and verify
 
 Building requires the .NET 8 SDK, CMake, Visual Studio 2022 with the Desktop development with C++ workload, and a Windows 10 or 11 SDK with C++/WinRT. Run from the project directory on Windows x64.
 
 Open [DeskPortal.sln](DeskPortal.sln) in Visual Studio or run `dotnet build` from the repository root.
+
+Run `DeskPortal.exe --self-test` for the three-peer pairing and toolbar checks. On an unlocked desktop, `DeskPortal.exe --projection-check` streams a test monitor and verifies a click and keystroke. Use `--projection-loopback-check` to verify monitor capture, display, and the input reports delivered to the source without moving the system pointer.
 
 | Directory | Contents |
 | --- | --- |

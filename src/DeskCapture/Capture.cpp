@@ -91,20 +91,23 @@ struct Capture {
     SizeInt32 size{};
     int64_t frameTime = 0;
 
-    Capture(HWND window, bool preparing) : source(window) {
+    Capture(HWND window, bool preparing, HMONITOR monitor = nullptr) : source(window) {
         auto begin = GetTickCount64();
         using namespace winrt::Windows::Security::Authorization::AppCapabilityAccess;
         if (preparing && AppCapability::Create(L"graphicsCaptureWithoutBorder").CheckAccess() != AppCapabilityAccessStatus::Allowed)
             throw hresult_access_denied();
-        check_hresult(setup->factory->CreateForWindow(window, guid_of<GraphicsCaptureItem>(), put_abi(item)));
+        if (monitor)
+            check_hresult(setup->factory->CreateForMonitor(monitor, guid_of<GraphicsCaptureItem>(), put_abi(item)));
+        else
+            check_hresult(setup->factory->CreateForWindow(window, guid_of<GraphicsCaptureItem>(), put_abi(item)));
         size = item.Size();
         pool = Direct3D11CaptureFramePool::CreateFreeThreaded(setup->surfaceDevice,
             DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, size);
         session = pool.CreateCaptureSession(item);
         auto poolReady = GetTickCount64();
         poolMs = static_cast<DWORD>(poolReady - begin);
-        try { session.IsCursorCaptureEnabled(false); } catch (hresult_no_interface const&) {}
-        if (auto border = session.try_as<IGraphicsCaptureSession3>()) {
+        try { session.IsCursorCaptureEnabled(monitor != nullptr); } catch (hresult_no_interface const&) {}
+        if (auto border = session.try_as<IGraphicsCaptureSession3>(); !monitor && border) {
             try {
                 if (preparing || GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Borderless).get() == AppCapabilityAccessStatus::Allowed) {
                     border.IsBorderRequired(false);
@@ -122,7 +125,7 @@ struct Capture {
         });
         session.StartCapture();
         startMs = static_cast<DWORD>(GetTickCount64() - borderReady);
-        RedrawWindow(source, nullptr, nullptr, RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
+        if (source) RedrawWindow(source, nullptr, nullptr, RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
     }
     ~Capture() {
         unmap();
@@ -173,7 +176,7 @@ struct Capture {
         if (resized) {
             texture = nullptr; access = nullptr; frame.Close();
             pool.Recreate(setup->surfaceDevice, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, size);
-            if (!fits) RedrawWindow(source, nullptr, nullptr, RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
+            if (!fits && source) RedrawWindow(source, nullptr, nullptr, RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
         }
         return fits;
     }
@@ -209,6 +212,13 @@ extern "C" __declspec(dllexport) HRESULT OpenWindowCapture(HWND window, BOOL pre
 }
 extern "C" __declspec(dllexport) HRESULT OpenCapture(HWND window, Capture** capture) noexcept {
     return OpenWindowCapture(window, FALSE, capture);
+}
+extern "C" __declspec(dllexport) HRESULT OpenMonitorCapture(HMONITOR monitor, Capture** capture) noexcept {
+    if (!monitor || !capture) return E_INVALIDARG;
+    HRESULT initialized = RoInitialize(RO_INIT_MULTITHREADED);
+    if (FAILED(initialized)) return initialized;
+    try { *capture = new Capture(nullptr, false, monitor); return S_OK; }
+    catch (...) { RoUninitialize(); return to_hresult(); }
 }
 extern "C" __declspec(dllexport) HRESULT ReadWindowTexture(Capture* capture, DWORD waitMs, ID3D11Texture2D** data, int* width, int* height) noexcept {
     try {

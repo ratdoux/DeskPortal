@@ -21,7 +21,7 @@ sealed class SettingsDialog : Form
         Tiling = (TileMode)tiling.SelectedIndex, Crossing = (EdgeActivation)crossing.SelectedIndex, Appearance = appearance,
         Stream = new(modes[codec.SelectedIndex], (int)fps.Value, (int)quality.Value, bitrate.Value),
         Shortcuts = new() { History = Read(DeskAction.History), Recover = Read(DeskAction.Recover),
-            Files = Read(DeskAction.Files), Performance = Read(DeskAction.Performance) }
+            Files = Read(DeskAction.Files), Performance = Read(DeskAction.Performance), Project = Read(DeskAction.Project) }
     };
     Keys Read(DeskAction action)
     {

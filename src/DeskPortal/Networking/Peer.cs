@@ -15,7 +15,8 @@ enum Kind : byte
     RecoverWindows, FileDropQuery, FileDropReply, ViewCommand, SharingChanged, SharingAck, WindowCaption, Ping, Pong,
     ResizeWindow, WindowResized, FrameConsumed, TransferSharingChanged, TimedPing, TimedPong, TransferSharingAck,
     // Sent only to a peer whose hello advertises it. An earlier build rejects an unknown kind.
-    ViewVisibility, ScreenLayout
+    ViewVisibility, ScreenLayout, MonitorRequest, MonitorClose, MonitorFrame, MonitorInput, MonitorRelease, MonitorPicker,
+    MonitorPolicy, MonitorVisibility
 }
 record Packet(Kind Kind, byte[] Data)
 {
@@ -36,7 +37,7 @@ record Packet(Kind Kind, byte[] Data)
 }
 record DeskHello(int Version, string Name, int Width, int Height, bool PeerRight, Sharing Features, int VideoDecoders = 0,
     bool CaptionUpdates = false, bool LatencyProbe = false, bool ViewVisibility = false,
-    DisplayInfo[]? Displays = null, Guid LayoutNode = default, bool Organizer = false, ScreenPlan? SavedLayout = null);
+    DisplayInfo[]? Displays = null, Guid LayoutNode = default, bool Organizer = false, ScreenPlan? SavedLayout = null, bool MonitorProjection = false);
 record ScreenLayoutChange(long Revision, ScreenPlan Plan);
 record ViewVisibility(Guid Id, bool Visible);
 record SharingUpdate(long Revision, Sharing Features);
@@ -149,7 +150,7 @@ sealed class Peer : IDisposable
     }
     static bool IsTransfer(Kind k) => k is Kind.Clip or Kind.FileStart or Kind.FileChunk or Kind.FileEnd or Kind.FileCancel
         or Kind.FileDropQuery or Kind.FileDropReply or Kind.TransferSharingChanged or Kind.TransferSharingAck;
-    internal static bool IsData(Kind k) => k == Kind.Frame || IsTransfer(k);
+    internal static bool IsData(Kind k) => k is Kind.Frame or Kind.MonitorFrame || IsTransfer(k);
     public void Send<T>(Kind kind, T data) where T : notnull
     {
         if (stop.IsCancellationRequested) return;
@@ -164,13 +165,13 @@ sealed class Peer : IDisposable
         if (!control.Enqueue(message)) Dispose();
     }
     public long WaitForFrameSpace(Guid id, CancellationToken token) => Split ? flow.Reserve(id, token, take: false) : 0;
-    public long Frame(Guid id, byte[] frame, CancellationToken capture = default)
+    public long Frame(Guid id, byte[] frame, CancellationToken capture = default, bool monitor = false)
     {
         capture.ThrowIfCancellationRequested();
         long wait = Split ? flow.Reserve(id, capture) : 0;
         try
         {
-            var packet = Packet.Binary(Kind.Frame, id, frame);
+            var packet = Packet.Binary(monitor ? Kind.MonitorFrame : Kind.Frame, id, frame);
             if (!frames.Writer.TryWrite(packet))
             {
                 long start = Stopwatch.GetTimestamp();
@@ -218,7 +219,7 @@ sealed class Peer : IDisposable
                 while (true)
                 {
                     var frame = await pictures.Read(Token);
-                    if (frame.Kind != Kind.Frame) throw new InvalidDataException("Unexpected video message.");
+                    if (frame.Kind is not (Kind.Frame or Kind.MonitorFrame)) throw new InvalidDataException("Unexpected video message.");
                     flow.Dispatch(frame, receive, id => Send(Kind.FrameConsumed, id), videoFailure, Token);
                 }
             }));

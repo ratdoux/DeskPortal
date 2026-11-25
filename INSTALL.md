@@ -22,6 +22,10 @@ To verify a download, run `Get-FileHash -Algorithm SHA256 .\<downloaded-file>` i
 
 Open **Quick start** on the dashboard or in the network setup dialog for a short walkthrough of pairing, arranging monitors, sharing and returning control.
 
+## Pair additional screen peers
+
+For additional projection partners, open **Screen peers…** on both PCs, allow each other’s IPv4 address and approve Windows Firewall setup. Choose **Pair** on one PC and confirm the same code on both. These direct connections use a separate peer-only TCP 47833 rule. Press **Ctrl+Alt+P** to choose a remote monitor.
+
 ## If the other PC does not appear
 
 - Check the IPv4 address on each PC. After switching Wi-Fi networks or receiving a new address, disconnect DeskPortal and update **Network access** on the other machine.

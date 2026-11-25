@@ -83,6 +83,7 @@ sealed class CaptureStream : IDisposable
         public void Dispose() => timer.Dispose();
     }
     [DllImport("DeskCapture.dll", EntryPoint = "OpenWindowCapture")] static extern int OpenCapture(nint hwnd, bool preparing, out nint capture);
+    [DllImport("DeskCapture.dll")] static extern int OpenMonitorCapture(nint monitor, out nint capture);
     [DllImport("DeskCapture.dll", EntryPoint = "ReadWindowTexture")] static extern int CaptureTexture(nint capture, int waitMs, out nint texture, out int width, out int height);
     [DllImport("DeskCapture.dll")] static extern int ReadCapturePixels(nint capture, out nint data, out int stride);
     [DllImport("DeskCapture.dll")] static extern int ReadOpeningImage(nint capture, int level, nint pixels, int width, int height, int stride);
@@ -146,7 +147,7 @@ sealed class CaptureStream : IDisposable
 
     public CaptureStream(nint hwnd, Func<byte[], CancellationToken, long> send, Action<byte[]> preview, Action<string> onFailure,
         bool nativeDialog, StreamOptions options, int decoders, Func<CancellationToken, long>? waitForSpace = null, string? label = null,
-        bool prepare = false)
+        bool prepare = false, bool monitor = false)
     {
         Options = options;
         sendOpening = send;
@@ -312,7 +313,7 @@ sealed class CaptureStream : IDisposable
                     bool localOnly = !handoff.Task.IsCompleted;
                     // The sender already owns this device while paired. Open the encoder
                     // in parallel with WGC once the selected window actually starts moving.
-                    nint paired = BorrowEncoderDevice();
+                    nint paired = monitor ? 0 : BorrowEncoderDevice();
                     if (paired != 0)
                     {
                         try
@@ -323,7 +324,7 @@ sealed class CaptureStream : IDisposable
                         }
                         finally { Marshal.Release(paired); }
                     }
-                    int rc = OpenCapture(hwnd, localOnly, out capture);
+                    int rc = monitor ? OpenMonitorCapture(hwnd, out capture) : OpenCapture(hwnd, localOnly, out capture);
                     StallLog.Stage("open capture", captureStarted);
                     if (localOnly)
                     {
@@ -374,7 +375,7 @@ sealed class CaptureStream : IDisposable
                     Meter.ObserveStage("Receiver credit", wait);
                     creditWait += wait;
                     if (!WantPreview) previewSent = false;
-                    if (!Win.IsWindow(hwnd)) throw new IOException("The original window was closed.");
+                    if (!monitor && !Win.IsWindow(hwnd)) throw new IOException("The original window was closed.");
                     var settings = Options;
                     // A change that arrives while paused is sent when the window is shown again.
                     bool paused = Paused;

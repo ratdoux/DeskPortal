@@ -145,7 +145,7 @@ sealed class PointerBridge : IDisposable
         // Smooth-wheel drivers can synthesize fractional wheel reports. Only
         // accept those while this mouse controls the peer. Our own injections
         // and lower-integrity injections must never travel back across the link.
-        if (report.Extra == Win.Tag || (report.Flags & 2) != 0) return false;
+        if (report.Extra is Win.Tag or Win.ProjectionTag || (report.Flags & 2) != 0) return false;
         if ((report.Flags & 1) != 0 && !(remote && MouseEnabled && message is Win.Wheel or Win.HorizontalWheel)) return false;
         return Physical(report.Point, message, (short)(report.Data >> 16));
     }

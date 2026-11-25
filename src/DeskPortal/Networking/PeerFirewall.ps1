@@ -3,11 +3,21 @@ $ErrorActionPreference = 'Stop'
 try {
     $env:PSModulePath = "$PSHOME\Modules"
     Import-Module (Join-Path $env:PSModulePath 'NetSecurity\NetSecurity.psd1')
-    foreach ($entry in @(@('TCP', $tcpPort), @('UDP', $udpPort))) {
+    $entries = @(@('TCP', $tcpPort), @('UDP', $udpPort))
+    if ($screenOnly) { $entries = ,@('TCP', $tcpPort) }
+    foreach ($entry in $entries) {
         $protocol, $port = $entry
         # The persistent IDs let an upgrade retarget the existing rules in place.
         $name = "DeskStream-Peer-$protocol-$port"
         $display = "DeskPortal from paired PC ($protocol $port)"
+        if ($screenOnly) {
+            $name = "DeskPortal-Screen-Peers-TCP-$port"
+            $display = "DeskPortal screen peers (TCP $port)"
+            if ($peerIp.Count -eq 0) {
+                Get-NetFirewallRule -PolicyStore PersistentStore -Name $name -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+                continue
+            }
+        }
         $parameters = @{
             PolicyStore = 'PersistentStore'
             Name = $name

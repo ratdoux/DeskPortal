@@ -35,6 +35,9 @@ static class SessionLinks
             {
                 await control.ReadExactlyAsync(ticket, token).ConfigureAwait(false);
                 socket = new TcpClient(endpoint.AddressFamily);
+                // Keep all channels on the interface chosen for the confirmed connection.
+                var local = ((IPEndPoint)primary.Client.LocalEndPoint!).Address;
+                socket.Client.Bind(new IPEndPoint(local.IsIPv4MappedToIPv6 ? local.MapToIPv4() : local, 0));
             }
             else
             {

@@ -192,6 +192,7 @@ sealed class WindowDesk : IDisposable
             nint hwnd = Win.GetAncestor(under, 2);
             if (hwnd == 0) return false;
             var view = Control.FromHandle(hwnd) as StreamWindow;
+            if (view != null && (view.IsMonitor || view.ToolbarAt(native))) return false;
             if (Control.FromHandle(hwnd) != null && view == null) return false;
             var box = Win.Bounds(hwnd);
             if (box.IsEmpty) return false;

@@ -11,6 +11,9 @@ static class Win
         // The back and forward buttons. Their data word is 1 or 2.
         XDown = 0x20B, XUp = 0x20C;
     public const nuint Tag = 0x444C4E4B;
+    public const nuint ProjectionTag = 0x4450524A;
+    [DllImport(User)] public static extern nint MonitorFromPoint(Point point, uint flags);
+    [DllImport(User)] public static extern nuint GetMessageExtraInfo();
     public delegate nint Hook(int code, nint message, nint data);
     [StructLayout(LayoutKind.Sequential)] public struct MouseData { public Point Point; public uint Data, Flags, Time; public nuint Extra; }
     [StructLayout(LayoutKind.Sequential)] public struct KeyboardData { public uint Key, Scan, Flags, Time; public nuint Extra; }

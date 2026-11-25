@@ -36,10 +36,14 @@ sealed record DeskSettings
             if (stream.Codec == FrameCodec.Jpeg && document.RootElement.TryGetProperty("Stream", out var old) &&
                 old.ValueKind == JsonValueKind.Object && !old.TryGetProperty("Mbps", out _))
                 stream = stream with { Codec = FrameCodec.Auto };
+            var shortcuts = saved.Shortcuts ?? new();
+            if (document.RootElement.TryGetProperty("Shortcuts", out var oldKeys) && oldKeys.ValueKind == JsonValueKind.Object &&
+                !oldKeys.TryGetProperty("Project", out _) && ActionShortcuts.Actions.Any(a => a != DeskAction.Project && shortcuts[a] == shortcuts.Project))
+                shortcuts = shortcuts with { Project = Keys.None };
             return saved with { Features = saved.Features & Sharing.All, Tiling = Enum.IsDefined(saved.Tiling) ? saved.Tiling : TileMode.Free,
                 Stream = stream, Appearance = saved.Appearance?.Validated() ?? DeskAppearance.Initial,
                 Crossing = Enum.IsDefined(saved.Crossing) ? saved.Crossing : EdgeActivation.Automatic,
-                Shortcuts = saved.Shortcuts != null && saved.Shortcuts.Error() == null ? saved.Shortcuts : new() };
+                Shortcuts = shortcuts.Error() == null ? shortcuts : new() };
         }
         catch (FileNotFoundException) { return new(); }
         catch (DirectoryNotFoundException) { return new(); }

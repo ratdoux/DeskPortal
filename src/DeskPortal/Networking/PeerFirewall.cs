@@ -12,14 +12,16 @@ static class PeerFirewall
         int Direction, int Action, bool Enabled, int Profiles, bool EdgeTraversal, string LocalScope,
         string RemotePorts, string Interfaces, string? Service)
     {
-        public bool Matches(string program, IPAddress peer, int protocol, int port) =>
-            string.Equals(Program, program, StringComparison.OrdinalIgnoreCase) && SingleHost(Scope)?.Equals(peer) == true &&
+        public bool Matches(string program, IPAddress peer, int protocol, int port) => Matches(program, [peer], protocol, port);
+        public bool Matches(string program, IReadOnlyCollection<IPAddress> peers, int protocol, int port) =>
+            string.Equals(Program, program, StringComparison.OrdinalIgnoreCase) && peers.Count > 0 &&
+            Scope.Split(',').Select(s => SingleHost(s.Trim())).ToHashSet().SetEquals(peers) &&
             Protocol == protocol && Ports == port.ToString() && Direction == 1 && Action == 1 && Enabled &&
             Profiles == 6 && !EdgeTraversal && LocalScope == "*" && RemotePorts == "*" &&
             string.Equals(Interfaces, "All", StringComparison.OrdinalIgnoreCase) && string.IsNullOrEmpty(Service);
     }
 
-    internal sealed record Rules(Rule? Tcp, Rule? Udp)
+    internal sealed record Rules(Rule? Tcp, Rule? Udp, Rule? Screens = null)
     {
         public bool Match(string program, IPAddress peer) => Tcp?.Matches(program, peer, 6, Invitation.Port) == true &&
             Udp?.Matches(program, peer, 17, NearbyComputers.Port) == true;
@@ -102,7 +104,8 @@ static class PeerFirewall
                     finally { Marshal.ReleaseComObject(rule); }
                 }
                 return new Rules(ReadRule($"{productName} from paired PC (TCP {Invitation.Port})"),
-                    ReadRule($"{productName} from paired PC (UDP {NearbyComputers.Port})"));
+                    ReadRule($"{productName} from paired PC (UDP {NearbyComputers.Port})"),
+                    ReadRule($"{productName} screen peers (TCP {ScreenPeers.Port})"));
             }
             finally { Marshal.ReleaseComObject(rules); }
         }
@@ -119,6 +122,29 @@ static class PeerFirewall
         string programData = Convert.ToBase64String(Encoding.UTF8.GetBytes(program));
         string script = $"$program = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{programData}'))\n" +
             $"$peerIp = '{peer}'\n$tcpPort = {Invitation.Port}\n$udpPort = {NearbyComputers.Port}\n" + reader.ReadToEnd();
+        await RunElevated(script);
+        if (!(await Task.Run(Read)).Match(program, peer))
+            throw new InvalidOperationException("The installed rules could not be verified in Windows Firewall.");
+    }
+
+    public static async Task EnsureScreens(string program, IPAddress[] addresses)
+    {
+        bool Matches(Rule? rule) => addresses.Length == 0 ? rule == null : rule?.Matches(program, addresses, 6, ScreenPeers.Port) == true;
+        if (addresses.Length > 16 || addresses.Any(a => ParsePeer(a.ToString()) == null))
+            throw new ArgumentException("Choose up to 16 individual peer IPv4 addresses.");
+        if (Matches((await Task.Run(Read)).Screens)) return;
+        using var source = typeof(PeerFirewall).Assembly.GetManifestResourceStream("DeskPortal.PeerFirewall.ps1")!;
+        using var reader = new StreamReader(source);
+        string encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(program));
+        string ips = string.Join(",", addresses.Select(a => $"'{a}'"));
+        await RunElevated($"$program = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}'))\n" +
+            $"$peerIp = @({ips})\n$screenOnly = $true\n$tcpPort = {ScreenPeers.Port}\n" + reader.ReadToEnd());
+        if (!Matches((await Task.Run(Read)).Screens))
+            throw new InvalidOperationException("Windows Firewall could not verify the screen peer rule.");
+    }
+
+    static async Task RunElevated(string script)
+    {
         string system = Environment.GetFolderPath(Environment.SpecialFolder.System);
         var start = new ProcessStartInfo(Path.Combine(system, @"WindowsPowerShell\v1.0\powershell.exe"))
         {
@@ -133,7 +159,5 @@ static class PeerFirewall
         }
         catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
         { throw new InvalidOperationException("Administrator approval was canceled."); }
-        if (!(await Task.Run(Read)).Match(program, peer))
-            throw new InvalidOperationException("The installed rules could not be verified in Windows Firewall.");
     }
 }

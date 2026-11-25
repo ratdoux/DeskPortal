@@ -72,6 +72,7 @@ static class Checks
             TestInputPriority();
             TestSettings();
             TestDashboardLayout();
+            Require(ProjectionChecks.Run(capture: false) == 0, "Multi-PC monitor projection");
             TestFiles();
             Task.Run(TestConfirmedPairing).GetAwaiter().GetResult();
             Task.Run(TestPair).GetAwaiter().GetResult();
@@ -162,6 +163,9 @@ static class Checks
             false, "*", "*", "All", null);
         var udp = tcp with { Protocol = 17, Ports = NearbyComputers.Port.ToString(), Scope = $"{ip}/255.255.255.255" };
         var both = new PeerFirewall.Rules(tcp, udp);
+        var screenRule = tcp with { Ports = ScreenPeers.Port.ToString(), Scope = "192.0.2.8/32,192.0.2.7/32" };
+        Require(screenRule.Matches(program, new[] { ip, IPAddress.Parse("192.0.2.8") }, 6, ScreenPeers.Port) &&
+            !screenRule.Matches(program, ip, 6, ScreenPeers.Port), "Screen firewall rule must match the exact allowed set");
         Require(both.ExistingPeer(program)?.Equals(ip) == true && both.Match(program.ToUpperInvariant(), ip), "Reuse existing peer-only Windows rules");
         Require(!both.Match(@"C:\Moved\DeskPortal.exe", ip) && !both.Match(program, IPAddress.Parse("192.0.2.8")),
             "Repair rules on a move or address change");
@@ -239,6 +243,15 @@ static class Checks
                 (bindings with { History = Keys.V }).Error() != null, "Accept valid bindings and reject conflicting or reserved shortcuts");
             TestPalettes();
             TestHotkeys();
+            File.WriteAllText(path, """{"Shortcuts":{"Files":"P, Control, Alt"}}""");
+            var oldKeys = DeskSettings.Load(path).Shortcuts;
+            Require(oldKeys.Files == (Keys.Control | Keys.Alt | Keys.P) && oldKeys.Project == Keys.None,
+                "Keep a pre-existing projection shortcut assignment on upgrade");
+            var secondary = new Rectangle(-2500, -1600, 1920, 1080);
+            Require(MonitorGeometry.ToDesktop(secondary, 65535, 65535) == new Point(secondary.Right - 1, secondary.Bottom - 1) &&
+                MonitorGeometry.ToDesktop(secondary, 0, 0) == secondary.Location &&
+                MonitorGeometry.Fit(new(1000, 900), new(1920, 1080), 28) == new Rectangle(0, 183, 1000, 562),
+                "Input and letterboxing on secondary monitors with negative coordinates");
             var work = new Rectangle(-1200, 80, 999, 802);
             var original = new Rectangle(-875, 300, 320, 160);
             Require(DeskSettings.Place(TileMode.Free, original, work) == original, "Free drop placement");

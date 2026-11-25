@@ -17,6 +17,7 @@ sealed class PairingDialog : Form
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
         var panel = new TableLayoutPanel { AutoSize = true, Padding = new Padding(18), ColumnCount = 1 };
         panel.Controls.Add(new Label { Text = $"Compare this code with the one on {computer}.", AutoSize = true, MaximumSize = new Size(380, 0) });
+        panel.Controls.Add(new Label { Text = $"Window sharing lets {computer} project your monitors. Mouse and keyboard sharing also lets it control them.", AutoSize = true, MaximumSize = new Size(380, 0) });
         panel.Controls.Add(new Label { Text = code.Insert(3, " "), Font = new Font("Consolas", 28, FontStyle.Bold),
             Tag = Tone.Primary, Padding = new Padding(10, 3, 10, 3), AutoSize = true, Margin = new Padding(0, 8, 0, 12), AccessibleName = $"Confirmation code {code}" });
         var actions = new FlowLayoutPanel { AutoSize = true, WrapContents = false };

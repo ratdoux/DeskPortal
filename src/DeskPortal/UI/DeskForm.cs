@@ -50,6 +50,14 @@ sealed class DeskForm : Form
     long layoutRevision;
     bool layoutLeader, lastLayoutFromLeader;
     readonly SessionHotkeys hotkeys = new();
+    readonly MonitorInput monitorInput = new();
+    readonly ScreenPeers screenPeers;
+    MonitorSession? primaryScreen;
+    MonitorPicker? picker;
+    ScreenPeerDialog? peerDialog;
+    readonly BlockButton project = new() { Text = "Project screen", Enabled = false };
+    readonly BlockButton stopScreens = new() { Text = "Stop projecting", Visible = false };
+    readonly Label screenStatus = new() { AutoSize = true, Visible = false };
     readonly BlockButton preferences = new() { Text = "Settings" }, stats = new() { Text = "Performance" };
     CancellationTokenSource? pending;
     // The transfer connection's reader thread also reads these three. See WriteChunk.
@@ -81,6 +89,11 @@ sealed class DeskForm : Form
             Shown += (_, _) => MessageBox.Show(this, $"Sharing is off because DeskPortal could not read your settings. Open Settings to choose what to share.\n\n{ex.Message}", "DeskPortal settings");
         }
         Text = "DeskPortal";
+        screenPeers = new(this, deviceId, () => settings, monitorInput, Status, ScreensChanged, async (name, code, token) =>
+        {
+            using var prompt = new PairingDialog(name, code);
+            return await prompt.Ask(peerDialog is { Visible: true } ? peerDialog : this, token);
+        });
         Font = new Font("Segoe UI", 10);
         AutoScaleDimensions = new SizeF(96, 96); AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size(822, 540);
@@ -133,11 +146,16 @@ sealed class DeskForm : Form
         Shown += async (_, _) =>
         {
             await RefreshLocalAddress();
+            if (listenToDesktop && !closing)
+            {
+                try { await screenPeers.Initialize(); }
+                catch (Exception ex) { Status($"Could not start screen pairing. {ex.Message}"); }
+            }
             if (listenToDesktop && !closing) await ConfigureNetwork(false);
         };
         networkAccess.Click += async (_, _) => await ConfigureNetwork(true);
         disconnect.Click += (_, _) => Detach("Disconnected");
-        restore.Click += (_, _) => pointer?.Recover();
+        restore.Click += (_, _) => RecoverAll();
         files.Click += (_, _) =>
         {
             using var dialog = new OpenFileDialog { Multiselect = true, Title = "Send files to the paired PC" };
@@ -158,7 +176,7 @@ sealed class DeskForm : Form
             catch (ExternalException) { if (++clipboardRetries <= 4) observe.Start(); }
             catch (Exception ex) { Status(ex.Message); }
         };
-        FormClosing += (_, _) => { closing = true; formLifetime.Cancel(); Detach("Closed"); };
+        FormClosing += (_, _) => { closing = true; picker?.Close(); formLifetime.Cancel(); Detach("Closed"); screenPeers.Dispose(); monitorInput.Dispose(); };
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += DisplayChanged;
         FormClosed += (_, _) => { Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= DisplayChanged; observe.Dispose(); performanceTimer.Dispose(); };
         ResumeLayout(true);
@@ -214,6 +232,16 @@ sealed class DeskForm : Form
         DeskStyle.Row(devices, DeskStyle.Caption("Screen layout"));
         DeskStyle.Row(devices, arrangement); side.SelectedIndexChanged += (_, _) => arrangement.SetSide(side.SelectedIndex == 0);
         DeskStyle.Row(devices, DeskStyle.LineOf(side, connect, editLayout));
+        var manage = new BlockButton { Text = "Screen peers…" }; DeskStyle.Button(manage); DeskStyle.Button(project);
+        manage.Click += (_, _) =>
+        {
+            if (peerDialog != null) { peerDialog.Activate(); return; }
+            peerDialog = new(screenPeers, settings.Appearance);
+            peerDialog.FormClosed += (_, _) => peerDialog = null;
+            peerDialog.Show(this);
+        };
+        project.Click += (_, _) => ProjectScreen();
+        DeskStyle.Row(devices, DeskStyle.LineOf(project, manage));
         var clipHeading = DeskStyle.Heading("Clipboard history");
         clipHeading.Tag = Tone.Complement; clipHeading.Padding = new Padding(6, 2, 6, 2);
         DeskStyle.Row(clips, clipHeading); DeskStyle.Row(clips, ListArea(history, noHistory), true);
@@ -223,6 +251,9 @@ sealed class DeskForm : Form
         DeskStyle.Row(body, toolbar);
         sharingState.Tag = streamState.Tag = Tone.Quiet;
         DeskStyle.Row(body, sharingState); DeskStyle.Row(body, streamState);
+        DeskStyle.Button(stopScreens);
+        stopScreens.Click += (_, _) => { foreach (var s in ScreenSessions().ToArray()) s.StopSending(); };
+        DeskStyle.Row(body, DeskStyle.LineOf(screenStatus, stopScreens));
         shortcutWarning.Visible = false; shortcutWarning.MaximumSize = new Size(600, 0); DeskStyle.Row(body, shortcutWarning);
         dashboard.Controls.Add(root); Controls.Add(dashboard);
     }
@@ -279,18 +310,58 @@ sealed class DeskForm : Form
         list.Visible = false;
         return panel;
     }
-    bool ActionEnabled(DeskAction action) => pointer != null && action switch
+    IEnumerable<MonitorSession> ScreenSessions() => primaryScreen == null ? screenPeers.Sessions : screenPeers.Sessions.Prepend(primaryScreen);
+    MonitorChoice[] ScreenChoices() => ScreenSessions().SelectMany(s => s.Choices).OrderBy(c => c.Session.Name).ThenBy(c => c.Number).ToArray();
+    void ScreensChanged()
     {
-        DeskAction.History => active.HasFlag(Sharing.Clipboard),
-        DeskAction.Files => active.HasFlag(Sharing.Files),
-        DeskAction.Recover or DeskAction.Performance => true,
+        if (closing || !IsHandleCreated) return;
+        var choices = ScreenChoices();
+        project.Enabled = choices.Length > 0;
+        restore.Enabled = ActionEnabled(DeskAction.Recover);
+        picker?.UpdateChoices(choices);
+        peerDialog?.RefreshPeers();
+        var sending = ScreenSessions().Where(s => s.Sending > 0).Select(s => s.Name).ToArray();
+        stopScreens.Visible = screenStatus.Visible = sending.Length > 0;
+        screenStatus.Text = "Projecting to " + string.Join(", ", sending);
+        if (listenToDesktop)
+        {
+            var warning = hotkeys.Update(Handle, settings.Shortcuts, ActionEnabled);
+            shortcutWarning.Text = warning ?? ""; shortcutWarning.Visible = warning != null;
+        }
+    }
+    void ProjectScreen()
+    {
+        if (closing) return;
+        if (picker != null) { picker.Activate(); return; }
+        var choices = ScreenChoices();
+        var area = Screen.FromPoint(Cursor.Position).WorkingArea;
+        void Open(MonitorChoice choice) { if (ScreenChoices().Contains(choice)) choice.Session.Open(choice.Monitor, area); }
+        if (choices.Length == 0) { Status("Pair a computer and enable window sharing to project a screen."); return; }
+        if (choices.Length == 1) { Open(choices[0]); return; }
+        picker = new(area, settings.Appearance, Open);
+        picker.FormClosed += (_, _) => picker = null;
+        picker.UpdateChoices(choices); picker.Show(); picker.Activate();
+    }
+    bool ActionEnabled(DeskAction action) => action switch
+    {
+        DeskAction.Project => ScreenSessions().Any(s => s.Available),
+        DeskAction.History => pointer != null && active.HasFlag(Sharing.Clipboard),
+        DeskAction.Files => pointer != null && active.HasFlag(Sharing.Files),
+        DeskAction.Recover => pointer != null || screenPeers.Sessions.Any(),
+        DeskAction.Performance => pointer != null,
         _ => false
     };
+    void RecoverAll()
+    {
+        foreach (var session in ScreenSessions().ToArray()) session.StopAll();
+        pointer?.Recover();
+    }
     void RunAction(DeskAction action)
     {
         if (!ActionEnabled(action) || closing) return;
-        if (action == DeskAction.Recover) { pointer!.Recover(); return; }
+        if (action == DeskAction.Recover) { RecoverAll(); return; }
         if (!Enabled) return; // A local modal dialog already owns keyboard focus.
+        if (action == DeskAction.Project) { ProjectScreen(); return; }
         pointer!.BringPointerBack();
         if (action == DeskAction.History) { Show(); if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal; Activate(); history.Focus(); }
         else if (action == DeskAction.Files) files.PerformClick();
@@ -304,7 +375,11 @@ sealed class DeskForm : Form
     }
     void DisplayChanged(object? sender, EventArgs args)
     {
-        if (IsHandleCreated && !closing) BeginInvoke(() => { if (peer != null) Detach("Display arrangement changed. Pair again to update the shared edge."); });
+        if (IsHandleCreated && !closing) BeginInvoke(() =>
+        {
+            screenPeers.DisconnectAll();
+            if (peer != null) Detach("Display arrangement changed. Pair again to update the shared edge.");
+        });
     }
     void Status(string message)
     {
@@ -356,6 +431,7 @@ sealed class DeskForm : Form
             peer.Send(Kind.SharingChanged, new SharingUpdate(++preferenceRevision, selected.Features));
         }
         ApplySettings();
+        screenPeers.SettingsChanged();
     }
     void ApplySettings()
     {
@@ -385,11 +461,8 @@ sealed class DeskForm : Form
                 listeningClipboard = false;
             }
         }
-        if (listenToDesktop)
-        {
-            var warning = hotkeys.Update(Handle, settings.Shortcuts, ActionEnabled);
-            shortcutWarning.Text = warning ?? ""; shortcutWarning.Visible = warning != null;
-        }
+        primaryScreen?.Configure(active, settings.Stream);
+        ScreensChanged();
         sharingState.Text = active == Sharing.None ? "All sharing is off" : $"Sharing · {active:G}";
         sharingState.Visible = true;
         Buttons(true);
@@ -592,7 +665,7 @@ sealed class DeskForm : Form
         var bounds = SystemInformation.VirtualScreen;
         localHello = new DeskHello(2, Environment.MachineName, bounds.Width, bounds.Height, side.SelectedIndex == 0, settings.Features,
             VideoCodec.VideoDecoderMask(), CaptionUpdates: true, LatencyProbe: true, ViewVisibility: true, Displays: DisplayInfo.Read(bounds),
-            LayoutNode: deviceId, Organizer: hosting, SavedLayout: pairedName == null ? null : ScreenPlan.Load(pairedName));
+            LayoutNode: deviceId, Organizer: hosting, SavedLayout: pairedName == null ? null : ScreenPlan.Load(pairedName), MonitorProjection: true);
         session.Send(Kind.Hello, localHello);
         var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var controls = new ControlDispatchWindow();
@@ -661,6 +734,10 @@ sealed class DeskForm : Form
                             else if (input.Value is MouseSample { Message: Win.LeftUp }) controls.TrackingOwnPress = false;
                             await ApplyPointer(input, packet.ReceivedAt).ConfigureAwait(false);
                         }
+                        else if (MonitorSession.Handles(packet.Kind))
+                        {
+                            if (primaryScreen != null) await primaryScreen.Receive(packet, controls);
+                        }
                         else if (packet.Kind == Kind.Frame)
                         {
                             if (active.HasFlag(Sharing.Windows) && windows != null) await windows.Frame(packet);
@@ -703,6 +780,8 @@ sealed class DeskForm : Form
                 throw new InvalidDataException("Unexpected computer name.");
             pairedName = hello.Name;
             layout = OpenLayout(hello);
+            if (hello.MonitorProjection && hello.Displays != null)
+                primaryScreen = new(session, hello.Name, hello.Displays, this, monitorInput, Status, ScreensChanged);
             side.SelectedIndex = layout.Right ? 0 : 1;
             arrangement.SetPeer(hello.Name);
             arrangement.SetLayout(layout);
@@ -718,7 +797,12 @@ sealed class DeskForm : Form
             pointer.RemoteShortcut = chord =>
             {
                 if (hotkeys.Find(chord) is not { } action || (!Enabled && action != DeskAction.Recover)) return false;
-                BeginInvoke(() => { if (peer == session) RunAction(action); });
+                if (action == DeskAction.Project)
+                {
+                    if (primaryScreen == null) return false;
+                    session.Send(Kind.MonitorPicker, true);
+                }
+                else BeginInvoke(() => { if (peer == session) RunAction(action); });
                 return true;
             };
             if (listenToDesktop) InstallInputHooks();
@@ -734,6 +818,9 @@ sealed class DeskForm : Form
         if (!active.HasFlag(Sharing.Files) && p.Kind is Kind.FileDropQuery or Kind.FileDropReply) return;
         switch (p.Kind)
         {
+            case Kind.MonitorPicker when primaryScreen != null:
+                if (active.HasFlag(Sharing.Mouse) && Enabled) ProjectScreen();
+                break;
             case Kind.ScreenLayout:
                 var change = p.Read<ScreenLayoutChange>();
                 if (!layout.Editable || change.Revision < 1 || change.Revision >= long.MaxValue)
@@ -855,6 +942,7 @@ sealed class DeskForm : Form
         if (IsHandleCreated) hotkeys.Clear(Handle);
         shortcutWarning.Visible = false;
         pointer?.Dispose(); pointer = null;
+        primaryScreen?.Dispose(); primaryScreen = null;
         edgeFiles?.Dispose(); edgeFiles = null;
         windows?.Dispose(); windows = null;
         clipboard?.Dispose(); clipboard = null;
@@ -867,7 +955,7 @@ sealed class DeskForm : Form
         streamState.Visible = false;
         if (closing) return;
         history.Items.Clear();
-        state.Text = "Disconnected"; Status(reason); Buttons(false);
+        state.Text = "Disconnected"; Status(reason); Buttons(false); ScreensChanged();
     }
     void SetInputThreadPriority(bool enabled)
     {

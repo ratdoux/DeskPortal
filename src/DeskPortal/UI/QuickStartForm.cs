@@ -24,6 +24,8 @@ sealed class QuickStartForm : Form
         Step("Pair and arrange screens", "Select the other PC under Nearby computers. Compare the six digits and choose Codes match on both PCs. In Edit screen layout, drag the monitors into position and choose Apply layout.");
         string modifier = settings.Crossing switch { EdgeActivation.HoldCtrl => "Hold Ctrl and move", EdgeActivation.HoldShift => "Hold Shift and move", _ => "Move" };
         Step("Work across the edge", $"{modifier} the pointer through a shared edge to use the other PC. Drag a window across by its title bar and drag it back to return it. Copy on one PC and paste on the other, or use Send files.");
+        string project = settings.Shortcuts.Project == Keys.None ? "Choose Project screen" : $"Press {ActionShortcuts.Format(settings.Shortcuts.Project)}";
+        Step("Project a monitor", $"{project} on the viewing PC. Choose a computer and display when prompted. Click or type inside its picture. The top-center buttons return the window or tile it on the viewing PC. Use Screen peers to pair additional computers.");
         string shortcut = settings.Shortcuts.Recover == Keys.None ? "" : $" You can also press {ActionShortcuts.Format(settings.Shortcuts.Recover)}.";
         Step("Return to this PC", $"Choose Bring windows home to return your windows and reclaim the mouse and keyboard.{shortcut}");
         var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true };

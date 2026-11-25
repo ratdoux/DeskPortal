@@ -16,7 +16,7 @@ sealed class TrafficCounter
     {
         switch (kind)
         {
-            case Kind.Frame: Interlocked.Add(ref video, bytes); break;
+            case Kind.Frame: case Kind.MonitorFrame: Interlocked.Add(ref video, bytes); break;
             case Kind.FileStart: case Kind.FileChunk: case Kind.FileEnd: case Kind.FileCancel:
             case Kind.FileDropQuery: case Kind.FileDropReply: Interlocked.Add(ref files, bytes); break;
             case Kind.Clip: Interlocked.Add(ref clipboard, bytes); break;
