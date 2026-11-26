@@ -44,6 +44,10 @@ sealed class DeskForm : Form
     readonly Label historyShortcut = DeskStyle.Caption("");
     readonly Label shortcutWarning = DeskStyle.Caption("");
     readonly ScreenArrangement arrangement = new();
+    readonly DesktopAvailability desktop = new();
+    readonly System.Windows.Forms.Timer displaySettle = new() { Interval = 1500 };
+    DesktopTopology topology = DesktopTopology.Read();
+    DesktopTopology? pendingTopology;
     readonly BlockButton editLayout = new() { Text = "Edit screen layout", Visible = false };
     string? pairedName;
     DeskHello? localHello;
@@ -177,8 +181,9 @@ sealed class DeskForm : Form
             catch (Exception ex) { Status(ex.Message); }
         };
         FormClosing += (_, _) => { closing = true; picker?.Close(); formLifetime.Cancel(); Detach("Closed"); screenPeers.Dispose(); monitorInput.Dispose(); };
+        displaySettle.Tick += (_, _) => CheckTopology();
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += DisplayChanged;
-        FormClosed += (_, _) => { Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= DisplayChanged; observe.Dispose(); performanceTimer.Dispose(); };
+        FormClosed += (_, _) => { Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= DisplayChanged; displaySettle.Dispose(); observe.Dispose(); performanceTimer.Dispose(); };
         ResumeLayout(true);
     }
     void BuildDashboard()
@@ -281,10 +286,12 @@ sealed class DeskForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        if (listenToDesktop) desktop.Register(Handle);
         NetworkChange.NetworkAddressChanged += NetworkChanged;
     }
     protected override void OnHandleDestroyed(EventArgs e)
     {
+        desktop.Unregister();
         NetworkChange.NetworkAddressChanged -= NetworkChanged;
         base.OnHandleDestroyed(e);
     }
@@ -375,11 +382,28 @@ sealed class DeskForm : Form
     }
     void DisplayChanged(object? sender, EventArgs args)
     {
-        if (IsHandleCreated && !closing) BeginInvoke(() =>
+        if (!IsHandleCreated || closing) return;
+        try { BeginInvoke(() => { if (!closing) { pendingTopology = null; displaySettle.Stop(); displaySettle.Start(); } }); }
+        catch (InvalidOperationException) { }
+    }
+    void CheckTopology()
+    {
+        if (listenToDesktop) desktop.Poll();
+        if (desktop.DisplayOff || desktop.Blocked) { pendingTopology = null; return; }
+        ObserveTopology(DesktopTopology.Read());
+    }
+    internal void ObserveTopology(DesktopTopology current)
+    {
+        if (!topology.Matches(current))
         {
+            // DisplayPort monitors can disappear briefly while power is changing.
+            if (pendingTopology?.Matches(current) != true) { pendingTopology = current; return; }
+            topology = current;
             screenPeers.DisconnectAll();
             if (peer != null) Detach("Display arrangement changed. Pair again to update the shared edge.");
-        });
+        }
+        pendingTopology = null;
+        displaySettle.Stop();
     }
     void Status(string message)
     {
@@ -665,7 +689,7 @@ sealed class DeskForm : Form
         var bounds = SystemInformation.VirtualScreen;
         localHello = new DeskHello(2, Environment.MachineName, bounds.Width, bounds.Height, side.SelectedIndex == 0, settings.Features,
             VideoCodec.VideoDecoderMask(), CaptionUpdates: true, LatencyProbe: true, ViewVisibility: true, Displays: DisplayInfo.Read(bounds),
-            LayoutNode: deviceId, Organizer: hosting, SavedLayout: pairedName == null ? null : ScreenPlan.Load(pairedName), MonitorProjection: true);
+            LayoutNode: deviceId, Organizer: hosting, SavedLayout: pairedName == null ? null : ScreenPlan.Load(pairedName), MonitorProjection: true, WindowIcons: true);
         session.Send(Kind.Hello, localHello);
         var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var controls = new ControlDispatchWindow();
@@ -774,6 +798,7 @@ sealed class DeskForm : Form
             remoteFeatures = hello.Features;
             session.VideoDecoders = hello.VideoDecoders;
             session.CaptionUpdates = hello.CaptionUpdates;
+            session.WindowIcons = hello.WindowIcons;
             session.LatencyProbe = hello.LatencyProbe;
             session.ViewVisibility = hello.ViewVisibility;
             if (!NearbyComputers.ValidName(hello.Name) || (pairedName != null && pairedName != hello.Name))
@@ -793,7 +818,7 @@ sealed class DeskForm : Form
             clipboard = new SharedClipboard(session, Status, RefreshHistory);
             edgeFiles = new EdgeFiles(layout, session, clipboard, Status);
             clipboard.TakeDropDestination = edgeFiles.TakeDestination;
-            pointer = new PointerBridge(session, windows, layout, edgeFiles);
+            pointer = new PointerBridge(session, windows, layout, edgeFiles, desktop: listenToDesktop ? desktop : null);
             pointer.RemoteShortcut = chord =>
             {
                 if (hotkeys.Find(chord) is not { } action || (!Enabled && action != DeskAction.Recover)) return false;
@@ -814,7 +839,7 @@ sealed class DeskForm : Form
         if (clipboard == null || windows == null || pointer == null || layout == null) throw new InvalidDataException("Expected display information.");
         if (!active.HasFlag(Sharing.Windows) && p.Kind is Kind.Window or Kind.Frame or Kind.WindowPlaced or Kind.EndWindow or
             Kind.ViewCommand or Kind.HomePreview or Kind.ClearHomePreview or Kind.ReturnWindow or Kind.WindowCaption or Kind.ResizeWindow or Kind.WindowResized or
-            Kind.ViewVisibility) return;
+            Kind.ViewVisibility or Kind.WindowIcon) return;
         if (!active.HasFlag(Sharing.Files) && p.Kind is Kind.FileDropQuery or Kind.FileDropReply) return;
         switch (p.Kind)
         {
@@ -850,6 +875,10 @@ sealed class DeskForm : Form
             case Kind.FileDropQuery: edgeFiles?.Query(p.Read<DropQuery>()); break;
             case Kind.FileDropReply: edgeFiles?.Reply(p.Read<DropReply>()); break;
             case Kind.Window: windows.Place(p.Read<ViewInfo>()); break;
+            case Kind.WindowIcon:
+                if (session.WindowIcons && p.Data.Length <= 2 * StreamAppIcon.Bytes)
+                    windows.SetIcon(p.Read<WindowIcon>());
+                break;
             case Kind.WindowCaption: windows.UpdateCaption(p.Read<WindowCaption>()); break;
             case Kind.ResizeWindow: windows.ResizeSource(p.Read<WindowSize>()); break;
             case Kind.WindowResized: windows.Resized(p.Read<WindowSize>()); break;
@@ -968,6 +997,8 @@ sealed class DeskForm : Form
     }
     protected override void WndProc(ref Message m)
     {
+        if (listenToDesktop && m.Msg == DesktopAvailability.PollMessage) { desktop.Poll(); return; }
+        if (listenToDesktop && (m.Msg == 0x218 || m.Msg == 0x2B1)) desktop.Message(m.Msg, m.WParam, m.LParam);
         if (m.Msg == 0x31D && listeningClipboard)
         {
             uint next = Win.GetClipboardSequenceNumber();

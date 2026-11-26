@@ -16,7 +16,7 @@ enum Kind : byte
     ResizeWindow, WindowResized, FrameConsumed, TransferSharingChanged, TimedPing, TimedPong, TransferSharingAck,
     // Sent only to a peer whose hello advertises it. An earlier build rejects an unknown kind.
     ViewVisibility, ScreenLayout, MonitorRequest, MonitorClose, MonitorFrame, MonitorInput, MonitorRelease, MonitorPicker,
-    MonitorPolicy, MonitorVisibility
+    MonitorPolicy, MonitorVisibility, WindowIcon
 }
 record Packet(Kind Kind, byte[] Data)
 {
@@ -37,7 +37,8 @@ record Packet(Kind Kind, byte[] Data)
 }
 record DeskHello(int Version, string Name, int Width, int Height, bool PeerRight, Sharing Features, int VideoDecoders = 0,
     bool CaptionUpdates = false, bool LatencyProbe = false, bool ViewVisibility = false,
-    DisplayInfo[]? Displays = null, Guid LayoutNode = default, bool Organizer = false, ScreenPlan? SavedLayout = null, bool MonitorProjection = false);
+    DisplayInfo[]? Displays = null, Guid LayoutNode = default, bool Organizer = false, ScreenPlan? SavedLayout = null, bool MonitorProjection = false,
+    bool WindowIcons = false);
 record ScreenLayoutChange(long Revision, ScreenPlan Plan);
 record ViewVisibility(Guid Id, bool Visible);
 record SharingUpdate(long Revision, Sharing Features);
@@ -49,6 +50,7 @@ record WindowCaption(Guid Id, CaptionRegion[]? Regions, bool Exact);
 record ViewInfo(Guid Id, string Title, int X, int Y, int Width, int Height, Guid? Owner = null, CaptionRegion[]? Caption = null,
     Point? DropPoint = null, Point? OwnerOffset = null, bool ExactCaption = false, bool? Resizable = null);
 record WindowSize(Guid Id, int Width, int Height);
+record WindowIcon(Guid Id, byte[] Pixels);
 record ReturnInfo(Guid Id, int X, int Y);
 record ViewCommand(Guid Id, bool Maximize);
 record WindowEvent(Guid Id, int Message, int X, int Y, int Data, int Modifiers,
@@ -71,6 +73,7 @@ sealed class Peer : IDisposable
     sealed record PendingReply(long Stamp, long Arrival);
     public int VideoDecoders { get; set; } = VideoCodec.VideoDecoderMask();
     public bool CaptionUpdates { get; set; }
+    public bool WindowIcons { get; set; }
     public bool LatencyProbe { get; set; }
     public bool ViewVisibility { get; set; }
     public bool Split => video != null;

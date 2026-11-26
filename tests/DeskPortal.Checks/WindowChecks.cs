@@ -15,6 +15,7 @@ static partial class WindowChecks
         public readonly Dictionary<Guid, FrameCodec> Codecs = [];
         public readonly Dictionary<Guid, (int Hash, int Changes)> Motion = [];
         public readonly HashSet<string> Stages = [];
+        public readonly Dictionary<Guid, int> Icons = [];
         public Task Dispatch(Packet packet)
         {
             var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -46,6 +47,11 @@ static partial class WindowChecks
                             }
                             break;
                         case Kind.WindowPlaced: desk.Ready(packet.Read<Guid>()); break;
+                        case Kind.WindowIcon:
+                            var icon = packet.Read<WindowIcon>();
+                            desk.SetIcon(icon);
+                            Icons[icon.Id] = Icons.GetValueOrDefault(icon.Id) + 1;
+                            break;
                         case Kind.WindowCaption: desk.UpdateCaption(packet.Read<WindowCaption>()); break;
                         case Kind.ResizeWindow: desk.ResizeSource(packet.Read<WindowSize>()); break;
                         case Kind.WindowResized: desk.Resized(packet.Read<WindowSize>()); break;
@@ -494,6 +500,7 @@ static partial class WindowChecks
             var wait = invite.Accept(stop.Token);
             using var client = await Invitation.Join("127.0.0.1", invite.Code, stop.Token, invite.ListeningPort);
             using var server = await wait;
+            server.WindowIcons = client.WindowIcons = true;
             using var deskA = new WindowDesk(ui, server, a, Console.WriteLine);
             using var deskB = new WindowDesk(ui, client, b, Console.WriteLine);
             var endpointA = new Endpoint(deskA, a, ui);
@@ -514,6 +521,7 @@ static partial class WindowChecks
             pointerA.Physical(anchor + new Size(80, 20), Win.Move, 0);
             pointerA.Physical(anchor, Win.LeftUp, 0);
             var id = endpointB.Frames.Keys.Single();
+            await Until(() => endpointB.Icons.GetValueOrDefault(id) == 1, "One source icon for the dragged window");
             var view = Application.OpenForms.OfType<StreamWindow>().Single(w => w.Id == id);
             var expectedTile = DeskSettings.Place(TileMode.RightHalf, new Rectangle(Point.Empty, view.SourceSize), work, true);
             await Until(() => view.Bounds == expectedTile && Win.FrameBounds(hwndA).Size == expectedTile.Size &&

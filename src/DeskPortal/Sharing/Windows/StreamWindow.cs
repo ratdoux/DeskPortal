@@ -53,6 +53,8 @@ sealed class StreamWindow : Form
     readonly Panel tools = new() { BackColor = Color.FromArgb(23, 24, 28), TabStop = false };
     readonly ToolTip tips = new();
     public bool IsMonitor { get; }
+    Icon? appIcon;
+    nint taskbarWindow;
     public bool ToolbarAt(Point desktop) => tools.Bounds.Contains(PointToClient(desktop));
     Kind InputKind => IsMonitor ? Kind.MonitorInput : Kind.WindowInput;
     readonly Peer peer;
@@ -88,6 +90,7 @@ sealed class StreamWindow : Form
         this.peer = peer; this.returnHome = returnHome; Id = info.Id; SourceSize = new(info.Width, info.Height);
         resizable = info.Resizable;
         IsMonitor = monitor;
+        if (!monitor) SetAppIcon(null);
         resizeTimer.Tick += (_, _) => SendSize();
         SetCaption(info.Caption, info.ExactCaption);
         Text = info.Title;
@@ -103,6 +106,30 @@ sealed class StreamWindow : Form
         Controls.Add(tools);
         tools.BringToFront();
         LayoutTools();
+    }
+    internal void SetAppIcon(byte[]? pixels)
+    {
+        if (IsMonitor) return;
+        var previous = appIcon;
+        appIcon = StreamAppIcon.Compose(pixels);
+        Icon = appIcon;
+        previous?.Dispose();
+    }
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        if (IsMonitor || Id == Guid.Empty) return;
+        taskbarWindow = Handle;
+        StreamAppIcon.SetStreamTaskbarIdentity(taskbarWindow, $"DeskPortal.Shared.{Id:N}");
+    }
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        if (taskbarWindow != 0)
+        {
+            StreamAppIcon.SetStreamTaskbarIdentity(taskbarWindow, null);
+            taskbarWindow = 0;
+        }
+        base.OnHandleDestroyed(e);
     }
     void AddTool(string name, string glyph, Action action)
     {
@@ -409,5 +436,6 @@ sealed class StreamWindow : Form
     {
         if (disposing) { ending = true; resizeTimer.Dispose(); tips.Dispose(); outline?.Dispose(); }
         base.Dispose(disposing);
+        if (disposing) { appIcon?.Dispose(); appIcon = null; }
     }
 }

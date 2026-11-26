@@ -284,10 +284,13 @@ sealed class DeskMark : Control
         base.OnPaint(e);
         var g = e.Graphics;
         g.ScaleTransform(Width / 43f, Height / 38f);
-        var palette = DeskStyle.PaletteFor(this);
-        using var rear = new Pen(ForeColor, 3);
-        using var front = new Pen(ForeColor, 3);
-        using var fill = new SolidBrush(palette.Complement);
+        Draw(g, ForeColor, DeskStyle.PaletteFor(this).Complement);
+    }
+    internal static void Draw(Graphics g, Color ink, Color accent)
+    {
+        using var rear = new Pen(ink, 3);
+        using var front = new Pen(ink, 3);
+        using var fill = new SolidBrush(accent);
         g.DrawRectangle(rear, 3, 5, 23, 17); g.DrawLine(rear, 10, 25, 21, 25);
         g.FillRectangle(fill, 16, 14, 23, 16); g.DrawRectangle(front, 16, 14, 23, 16);
         g.DrawLine(front, 27, 30, 27, 34); g.DrawLine(front, 21, 34, 33, 34);

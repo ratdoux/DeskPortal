@@ -20,6 +20,16 @@ sealed record DisplayInfo(string Id, Rectangle Bounds, bool Primary = false)
         return true;
     }
 }
+sealed record DesktopTopology(Rectangle Bounds, DisplayInfo[] Displays)
+{
+    public static DesktopTopology Read()
+    {
+        var area = SystemInformation.VirtualScreen;
+        return new(area, DisplayInfo.Read(area));
+    }
+    public bool Matches(DesktopTopology other) => Bounds == other.Bounds && Displays.Length == other.Displays.Length &&
+        Displays.ToHashSet().SetEquals(other.Displays);
+}
 sealed record TilePosition(string Id, int X, int Y);
 sealed record ScreenPlan(TilePosition[] Here, TilePosition[] There)
 {

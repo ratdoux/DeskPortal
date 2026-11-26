@@ -52,6 +52,9 @@ sealed class PointerBridge : IDisposable
     readonly EdgeFiles files;
     readonly Win.Hook mouseHook, keyHook;
     readonly Action<Point> moveCursor;
+    readonly DesktopAvailability? desktop;
+    bool displayOff, desktopBlocked, reanchor, allowWakeMove;
+    readonly System.Windows.Forms.Timer desktopWatch = new() { Interval = 400 };
     nint mouseHandle, keyHandle;
     bool remote, remotePress, localPress, warping, receivedDrag;
     Sharing features = Sharing.All;
@@ -89,12 +92,20 @@ sealed class PointerBridge : IDisposable
     readonly HashSet<int> sentKeys = [], receivedKeys = [], receivedButtons = [], receivedExtraButtons = [];
     // Keys this desktop saw go down and has not yet seen released.
     readonly Dictionary<int, (uint Scan, bool Extended)> localKeys = [];
-    public PointerBridge(Peer peer, WindowDesk windows, DeskLayout layout, EdgeFiles files, Action<Point>? moveCursor = null)
+    public PointerBridge(Peer peer, WindowDesk windows, DeskLayout layout, EdgeFiles files, Action<Point>? moveCursor = null,
+        DesktopAvailability? desktop = null)
     {
         this.peer = peer; this.windows = windows; this.layout = layout; this.files = files;
         mouseHook = Mouse;
         keyHook = Key;
         this.moveCursor = moveCursor ?? Warp;
+        this.desktop = desktop;
+        if (desktop != null)
+        {
+            desktop.Changed += DesktopChanged;
+            desktopWatch.Tick += (_, _) => desktop.Poll();
+            DesktopChanged();
+        }
     }
     public void InstallHooks()
     {
@@ -103,6 +114,7 @@ sealed class PointerBridge : IDisposable
         hooked = true;
         hookWatch.Tick += (_, _) => CheckHooks();
         hookWatch.Start();
+        if (desktop != null) desktopWatch.Start();
     }
     void Hook()
     {
@@ -118,17 +130,45 @@ sealed class PointerBridge : IDisposable
     int lastHookTick;
     void CheckHooks()
     {
-        if (!hooked) return;
+        if (!hooked || desktopBlocked) return;
         var input = new Win.LastInput { Size = Marshal.SizeOf<Win.LastInput>() };
         if (!Win.GetLastInputInfo(ref input)) return;
         int now = Environment.TickCount;
         uint sinceInput = unchecked((uint)now - input.Time), sinceHook = unchecked((uint)(now - lastHookTick));
         if (mouseHandle != 0 && keyHandle != 0 && sinceHook <= sinceInput + 1500) { hookWatch.Interval = 2000; return; }
+        RefreshHooks();
+        // Input to an elevated window never reaches these hooks either. Check less often while that lasts.
+        hookWatch.Interval = Math.Min(hookWatch.Interval * 2, 30000);
+    }
+    void RefreshHooks()
+    {
         if (mouseHandle != 0) Win.UnhookWindowsHookEx(mouseHandle);
         if (keyHandle != 0) Win.UnhookWindowsHookEx(keyHandle);
         Hook();
-        // Input to an elevated window never reaches these hooks either. Check less often while that lasts.
-        hookWatch.Interval = Math.Min(hookWatch.Interval * 2, 30000);
+    }
+    void DesktopChanged() => SetDesktopState(desktop!.DisplayOff, desktop.Blocked);
+    void SetDesktopState(bool off, bool blocked)
+    {
+        if (displayOff == off && desktopBlocked == blocked) return;
+        bool wasBlocked = desktopBlocked, wasOff = displayOff;
+        displayOff = off; desktopBlocked = blocked;
+        allowWakeMove = off && !blocked;
+        previousLocal = null;
+        reanchor = remote;
+        if (blocked || off)
+        {
+            cover.Hide();
+            if (remote || remotePress) { ReleaseSentKeys(); peer.Send(Kind.ReleaseInput, 0); }
+            if (receivedDrag || windows.CaptionPressed || windows.Dragging) windows.CancelDrag();
+            files.Reset();
+            localKeys.Clear(); shortcutKeys.Clear();
+            localPress = remotePress = receivedDrag = false;
+        }
+        if (!blocked)
+        {
+            if (wasBlocked) ReleaseReceived();
+            if ((wasBlocked || (wasOff && !off)) && hooked) RefreshHooks();
+        }
     }
     nint Mouse(int code, nint w, nint l)
     {
@@ -163,6 +203,26 @@ sealed class PointerBridge : IDisposable
     }
     internal bool Physical(Point p, int msg, int data)
     {
+        if (desktopBlocked) { desktop?.WakeGesture(); return false; }
+        if (remote && allowWakeMove && msg == Win.Move)
+        {
+            // Windows must see a real movement to wake a powered-down local display.
+            // The next report re-centres the local cursor, preserving the peer position.
+            allowWakeMove = false;
+            return false;
+        }
+        if (remote && reanchor)
+        {
+            reanchor = false;
+            cover.At(anchor);
+            moveCursor(anchor);
+            if (msg == Win.Move)
+            {
+                var saved = layout.ToPeer(logical);
+                peer.Send(Kind.Mouse, new MouseSample(saved.X, saved.Y, Win.Move, 0));
+                return true;
+            }
+        }
         bool wasRemote = remote;
         bool returnedHome = false;
         if (remote && msg == Win.Move)
@@ -249,7 +309,8 @@ sealed class PointerBridge : IDisposable
     nint Key(int code, nint w, nint l)
     {
         lastHookTick = Environment.TickCount;
-        if (code >= 0)
+        if (code >= 0 && desktopBlocked) desktop?.WakeGesture();
+        if (code >= 0 && !desktopBlocked)
         {
             var k = Marshal.PtrToStructure<Win.KeyboardData>(l);
             bool up = (k.Flags & 0x80) != 0;
@@ -301,6 +362,12 @@ sealed class PointerBridge : IDisposable
     public Task Receive(MouseSample m)
     {
         if (!MouseEnabled) return Task.CompletedTask;
+        if (desktopBlocked)
+        {
+            if (desktop?.CanWakeSaver == true && m.Message == Win.Move && m.OutsideDesk == null)
+                moveCursor(layout.FromWire(new(m.X, m.Y)));
+            return Task.CompletedTask;
+        }
         bool wheel = m.Message is Win.Wheel or Win.HorizontalWheel;
         var point = layout.FromWire(new(m.X, m.Y));
         bool outside = m.OutsideDesk.HasValue || !layout.Local.Contains(point);
@@ -342,7 +409,7 @@ sealed class PointerBridge : IDisposable
     }
     public void Receive(KeySample k)
     {
-        if (!MouseEnabled || k.Key is < 1 or > 254) return;
+        if (!MouseEnabled || desktopBlocked || k.Key is < 1 or > 254) return;
         if (k.Up) receivedKeys.Remove(k.Key); else receivedKeys.Add(k.Key);
         Win.keybd_event((byte)k.Key, (byte)k.Scan, (k.Up ? 2u : 0) | (k.Extended ? 1u : 0), Win.Tag);
     }
@@ -366,7 +433,7 @@ sealed class PointerBridge : IDisposable
             var home = layout.HomeTile(logical);
             moveCursor(home.ToNative(layout.Clamp(home.Desk,logical)));
         }
-        previousLocal = null; remoteTile = null;
+        previousLocal = null; remoteTile = null; reanchor = false;
         remote = remotePress = localPress = false;
         ReleaseSentKeys();
         peer.Send(Kind.ReleaseInput, 0);
@@ -378,6 +445,8 @@ sealed class PointerBridge : IDisposable
     public void Dispose()
     {
         hooked = false;
+        if (desktop != null) desktop.Changed -= DesktopChanged;
+        desktopWatch.Dispose();
         hookWatch.Dispose();
         if (mouseHandle != 0) Win.UnhookWindowsHookEx(mouseHandle);
         if (keyHandle != 0) Win.UnhookWindowsHookEx(keyHandle);

@@ -18,7 +18,7 @@ sealed class WindowDesk : IDisposable
         public DragPreview? Preview;
         public Rectangle? PreviewAt;
         public bool PreviewQueued;
-        public bool Ready, Dropped;
+        public bool Ready, Dropped, IconRequested;
         public Size? ResizeMargins;
         public nint MouseTarget;
         public WinUiInput? WinUi;
@@ -345,7 +345,7 @@ sealed class WindowDesk : IDisposable
         {
             var pos = layout.ToPeer(box.Location,p);
             source.PeerPosition = pos;
-            peer.Send(Kind.Window, new ViewInfo(source.Id, source.Title, pos.X, pos.Y, box.Width, box.Height, Caption: source.Caption, ExactCaption: source.Header != null, Resizable: source.Resizable));
+            SendPlacement(source, new ViewInfo(source.Id, source.Title, pos.X, pos.Y, box.Width, box.Height, Caption: source.Caption, ExactCaption: source.Header != null, Resizable: source.Resizable));
             Preview(source, layout.LocalVisible(box) ? native : null);
             return;
         }
@@ -388,6 +388,31 @@ sealed class WindowDesk : IDisposable
         s.Stream.Meter.Label = "send  " + s.Title;
         s.Stream.Share();
         return s;
+    }
+    void SendPlacement(Origin source, ViewInfo placement)
+    {
+        peer.Send(Kind.Window, placement);
+        if (!peer.WindowIcons || source.IconRequested) return;
+        source.IconRequested = true;
+        SendIcon(source);
+    }
+    async void SendIcon(Origin source)
+    {
+        // Start() runs in the mouse hook. Slow WM_GETICON handlers or shell icon
+        // extraction must not delay the drag or the first frame.
+        try
+        {
+            var pixels = await Task.Run(() => StreamAppIcon.Read(source.Hwnd));
+            if (pixels != null && sources.ContainsKey(source.Id) && !peer.Token.IsCancellationRequested)
+                peer.Send(Kind.WindowIcon, new WindowIcon(source.Id, pixels));
+        }
+        catch (Exception e) when (e is ArgumentException or System.Runtime.InteropServices.ExternalException or
+            IOException or InvalidOperationException or OutOfMemoryException) { }
+    }
+    public void SetIcon(WindowIcon icon)
+    {
+        if (icon.Pixels is { Length: StreamAppIcon.Bytes } && views.TryGetValue(icon.Id, out var view))
+            view.SetAppIcon(icon.Pixels);
     }
     Origin CreateCapture(nint hwnd, Rectangle home, bool maximized, bool dialog, bool prepare)
     {
@@ -439,7 +464,7 @@ sealed class WindowDesk : IDisposable
             var pos = new Point(Math.Clamp(parent.PeerPosition.X + bounds.X - parentBounds.X, 0, Math.Max(0, layout.Other.Width - bounds.Width)),
                 Math.Clamp(parent.PeerPosition.Y + bounds.Y - parentBounds.Y, 0, Math.Max(0, layout.Other.Height - bounds.Height)));
             s.PeerPosition = pos;
-            peer.Send(Kind.Window, new ViewInfo(s.Id, Win.Title(hwnd), pos.X, pos.Y, bounds.Width, bounds.Height, parent.Id,
+            SendPlacement(s, new ViewInfo(s.Id, Win.Title(hwnd), pos.X, pos.Y, bounds.Width, bounds.Height, parent.Id,
                 OwnerOffset: new Point(bounds.X - parentBounds.X, bounds.Y - parentBounds.Y), Resizable: s.Resizable));
             return true;
         }, 0);
@@ -466,7 +491,7 @@ sealed class WindowDesk : IDisposable
         if (!outside) { Restore(s.Id, layout.LocalPoint(new Point(p.X - d.Offset.X, p.Y - d.Offset.Y),p), false); return; }
         s.Dropped = true;
         var dropPoint = layout.ToPeer(p);
-        peer.Send(Kind.Window, new ViewInfo(s.Id, s.Title, s.PeerPosition.X, s.PeerPosition.Y, d.Size.Width,
+        SendPlacement(s, new ViewInfo(s.Id, s.Title, s.PeerPosition.X, s.PeerPosition.Y, d.Size.Width,
             d.Size.Height, Caption: s.Caption, DropPoint: dropPoint, ExactCaption: s.Header != null, Resizable: s.Resizable));
         Preview(s, null);
     }

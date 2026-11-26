@@ -89,10 +89,12 @@ static class ProjectionChecks
         using var local = await accept;
         var requests = new ConcurrentQueue<MonitorRequest>();
         var returns = new ConcurrentQueue<ReturnInfo>();
+        var mouse = new ConcurrentQueue<MouseSample>();
         var reader = Task.Run(() => remote.Run(p =>
         {
             if (p.Kind == Kind.MonitorRequest) requests.Enqueue(p.Read<MonitorRequest>());
             if (p.Kind == Kind.ReturnWindow) returns.Enqueue(p.Read<ReturnInfo>());
+            if (p.Kind == Kind.Mouse) mouse.Enqueue(p.Read<MouseSample>());
             return Task.CompletedTask;
         }));
         var session = form.RunSession(local, timeout.Token);
@@ -100,7 +102,7 @@ static class ProjectionChecks
         {
             var screen = new DisplayInfo("Test display", new(0, 0, 1280, 720), true);
             remote.Send(Kind.Hello, new DeskHello(2, "ScreenTest", 1280, 720, true, Sharing.Mouse | Sharing.Windows,
-                Displays: [screen], LayoutNode: Guid.NewGuid(), MonitorProjection: true));
+                Displays: [screen], LayoutNode: Guid.NewGuid(), MonitorProjection: true, WindowIcons: true));
             await Until(() => form.ScreenLayout != null, "Main peer hello");
             remote.Send(Kind.MonitorPicker, true);
             await Until(() => !requests.IsEmpty, "Forwarded shortcut on the pointer's PC");
@@ -118,6 +120,7 @@ static class ProjectionChecks
             StreamWindow? Window() => Application.OpenForms.OfType<StreamWindow>().FirstOrDefault(w => w.Id == id);
             await Until(() => Window()?.Visible == true, "Normal streamed window toolbar");
             var view = Window()!;
+            await CheckWindowIcon(form, view, remote);
             var buttons = view.Controls.OfType<Panel>().Single().Controls.OfType<Button>().ToArray();
             buttons.Single(b => b.AccessibleName == "Tile on the left").PerformClick();
             Require(view.Bounds == DeskSettings.Place(TileMode.LeftHalf, view.Bounds, area, true), "Normal window tiles on viewer");
@@ -126,6 +129,14 @@ static class ProjectionChecks
             remote.Send(Kind.EndWindow, id);
             await Until(() => view.IsDisposed, "Streamed window cleanup");
             Console.WriteLine("PASS  Primary pair opens the sole monitor on a forwarded shortcut. Normal window toolbar tiles locally and sends the original home.");
+            await CheckWake(form, local, mouse);
+            var original = DesktopTopology.Read();
+            var changed = original with { Bounds = original.Bounds with { Width = original.Bounds.Width + 1 } };
+            form.ObserveTopology(changed);
+            form.ObserveTopology(original with { Displays = original.Displays.Reverse().ToArray() });
+            Require(form.ScreenLayout != null, "Transient power or reordered inventory disconnected the pair");
+            form.ObserveTopology(changed); form.ObserveTopology(changed);
+            Require(form.ScreenLayout == null, "A persistent layout change must invalidate the old shared edges");
         }
         finally
         {
@@ -133,6 +144,78 @@ static class ProjectionChecks
             try { await Task.WhenAll(session, reader); }
             catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException) { }
         }
+    }
+    static async Task CheckWake(Form owner, Peer peer, ConcurrentQueue<MouseSample> reports)
+    {
+        var layout = new DeskLayout(new Rectangle(50, 60, 400, 300), new Size(500, 300), true);
+        using var desk = new WindowDesk(owner, peer, layout, _ => { });
+        using var clip = new SharedClipboard(peer, _ => { }, () => { });
+        using var files = new EdgeFiles(layout, peer, clip, _ => { });
+        Point anchor = default;
+        var desktop = new DesktopAvailability();
+        using var pointer = new PointerBridge(peer, desk, layout, files, p => anchor = p, desktop);
+        pointer.SetSharing(Sharing.Mouse);
+        pointer.Physical(new(400, 180), Win.Move, 0);
+        Require(pointer.Physical(new(449, 180), Win.Move, 0), "Enter peer before sleep");
+        pointer.Physical(anchor + new Size(160, 0), Win.Move, 0);
+        await Until(() => reports.Any(m => m.X == 160), "Set initial remote cursor");
+        Point parked = anchor;
+        foreach (bool saver in new[] { false, true })
+        {
+            reports.Clear();
+            if (saver) desktop.ObserveInputDesktop(true, true); else ReportDisplayPower(desktop, 0);
+            Require(!pointer.Physical(new(51, 61), Win.Move, 0), "Windows must see the wake gesture");
+            if (saver) Require(!pointer.Physical(new(52, 62), Win.LeftDown, 0), "Screensaver must retain local button input");
+            if (saver) desktop.ObserveInputDesktop(false, true); else ReportDisplayPower(desktop, 1);
+            Require(pointer.Physical(new(52, 62), Win.Move, 0) && anchor == parked, "Re-anchor the displaced pointer on wake");
+            await Until(() => reports.Any(m => m.Message == Win.Move && m.X == 160), "Retain remote cursor position after wake");
+            pointer.Physical(anchor + new Size(11, 0), Win.Move, 0);
+            pointer.Physical(anchor, Win.LeftDown, 0); pointer.Physical(anchor, Win.LeftUp, 0);
+            await Until(() => reports.Any(m => m.Message == Win.LeftUp && m.X == 171), "Remote movement and click after wake");
+            pointer.Physical(anchor - new Size(11, 0), Win.Move, 0);
+            await Until(() => reports.LastOrDefault()?.X == 160, "Return to baseline position");
+        }
+        pointer.Physical(anchor - new Size(205, 0), Win.Move, 0);
+        Require(!pointer.Physical(anchor, Win.Move, 0), "Still able to cross back normally");
+        Console.WriteLine("PASS  Display-off and screensaver transitions preserve remote pointer ownership, coordinates, clicks and return crossing.");
+    }
+    static unsafe void ReportDisplayPower(DesktopAvailability desktop, int value)
+    {
+        Span<byte> payload = stackalloc byte[24];
+        new Guid("2B84C20E-AD23-4DDF-93DB-05FFBD7EFCA5").TryWriteBytes(payload);
+        BitConverter.TryWriteBytes(payload[16..], sizeof(int));
+        BitConverter.TryWriteBytes(payload[20..], value);
+        fixed (byte* bytes = payload) desktop.Message(0x218, 0x8013, (nint)bytes);
+    }
+    static async Task CheckWindowIcon(Form source, StreamWindow view, Peer remote)
+    {
+        using var sample = new Bitmap(32, 32);
+        using (var g = Graphics.FromImage(sample)) g.Clear(Color.Crimson);
+        using var fixtureIcon = StreamAppIcon.FromBitmap(sample);
+        source.Icon = fixtureIcon;
+        var hwnd = source.Handle;
+        var pixels = await Task.Run(() => StreamAppIcon.Read(hwnd));
+        Require(pixels?.Length == StreamAppIcon.Bytes, "Read original source HWND icon");
+        // Compare the source colour and the DeskPortal mark on the shell-facing HICON.
+        using var expected = StreamAppIcon.Compose(pixels);
+        using var bitmap = expected.ToBitmap();
+        bool Red(Color c) => c.R > 180 && c.G < 105 && c.B < 105;
+        var center = bitmap.GetPixel(bitmap.Width / 3, bitmap.Height / 3);
+        Require(Red(center), $"Read the source window's chosen icon (captured BGRA {string.Join(",", pixels!.Skip(4 * (16 * StreamAppIcon.Side + 16)).Take(4))}, composed {center})");
+        var fallback = view.Icon;
+        TaskbarChecks.VerifyIdentity(view);
+        remote.Send(Kind.WindowIcon, new WindowIcon(view.Id, pixels!));
+        await Until(() => view.Icon != fallback, "Apply icon received on the paired connection");
+        Require(Win.SendMessageTimeout(view.Handle, 0x7f, 1, 0, 2, 200, out var native) != 0 && native != 0, "Window exposes a taskbar HICON");
+        using var shellIcon = Icon.FromHandle(native);
+        using var actual = shellIcon.ToBitmap();
+        Require(Enumerable.Range(0, actual.Width / 2).Any(x => Red(actual.GetPixel(x, actual.Height / 2))), "Windows sees the source icon");
+        Require(Enumerable.Range(actual.Width / 2, actual.Width - actual.Width / 2).Any(x =>
+            Enumerable.Range(actual.Height / 2, actual.Height - actual.Height / 2).Any(y => {
+                var c = actual.GetPixel(x, y); return c.G > 175 && c.R < 140 && c.B > 130;
+            })), "Windows sees the DeskPortal mark on the remote app icon");
+        Console.WriteLine("PASS  A source HWND's icon crossed the paired connection and Windows returned the badged taskbar icon.");
+        source.Icon = null;
     }
     static async Task CheckCapture(MonitorSession session, MonitorSession source, ConcurrentQueue<MonitorInput.Input>? reports)
     {

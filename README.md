@@ -62,6 +62,10 @@ The prototype targets ordinary desktop apps at the same privilege level. Compati
 
 ## Project a monitor
 
+A streamed app has its own taskbar button on the viewing PC. Its original icon carries a small DeskPortal badge. If the source app supplies no icon, the badge appears on a generic window icon.
+
+If your mouse is on the other PC when its home PC’s display turns off or its screensaver starts, DeskPortal remembers the remote cursor position. After waking or unlocking the home PC, keep using the same mouse or cross the shared edge to return.
+
 Press **Ctrl+Alt+P** with the pointer on the PC where you want to view the stream, or choose **Project screen** on its dashboard. A single available monitor opens immediately. With multiple monitors or paired computers, choose a computer and display in the centered picker. Change the shortcut in **Settings → Actions**.
 
 Click, scroll or type inside the projection to control the source computer. Enable window sharing on both PCs for video and mouse and keyboard sharing on both for control. A projected monitor keeps its resolution and aspect ratio as you resize the viewer. Windows shows its monitor capture indicator on the source. Choose **Stop projecting** there to end screen sharing.
